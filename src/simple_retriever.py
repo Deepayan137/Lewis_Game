@@ -19,7 +19,7 @@ from transformers import Qwen2VLForConditionalGeneration, AutoTokenizer, AutoPro
 from qwen_vl_utils import process_vision_info
 # INSERT_YOUR_CODE
 from torch.utils.data import Dataset, DataLoader
-
+# test comment
 class SimpleClipRetriever:
     def __init__(self, 
                  embed_dim=768,
