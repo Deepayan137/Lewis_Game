@@ -1,11 +1,11 @@
 import os
 import re
 import torch
+import json
+import argparse
 import torch.nn as nn
 from PIL import Image
-import json
-from transformers import Qwen2VLForConditionalGeneration
-import argparse
+from transformers import Qwen2VLForConditionalGeneration, AutoModelForCausalLM, AutoTokenizer
 from tqdm import *
 from transformers import AutoModelForVision2Seq, AutoProcessor
 from datasets import load_dataset, load_from_disk
@@ -109,18 +109,23 @@ def extract_answer_content(text):
             return text
 
 def setup_model(model_name_or_path, device="cuda"):
-    """
-    Setup the Qwen 2.5 VL model and processor with optimizations.
-    """
-    processor = AutoProcessor.from_pretrained(model_name_or_path)  
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
-        model_name_or_path,
-        torch_dtype=torch.float16,
-        attn_implementation="flash_attention_2",
-        device_map="auto"  # Let it automatically distribute
-    )
-    
-    # Optimization: Compile the model for faster inference (PyTorch 2.0+)
+    if model_name_or_path == "Qwen/Qwen3-8B":
+        processor = AutoTokenizer.from_pretrained(model_name_or_path)
+        model = AutoModelForCausalLM.from_pretrained(
+                model_name_or_path,
+                torch_dtype="auto",
+                device_map="auto")
+    else:
+        """
+        Setup the Qwen 2.5 VL model and processor with optimizations.
+        """
+        processor = AutoProcessor.from_pretrained(model_name_or_path)  
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            model_name_or_path,
+            torch_dtype=torch.float16,
+            attn_implementation="flash_attention_2",
+            device_map="auto"  # Let it automatically distribute
+        )  
     if hasattr(torch, 'compile'):
         try:
             model = torch.compile(model, mode="reduce-overhead")
@@ -134,6 +139,90 @@ def setup_model(model_name_or_path, device="cuda"):
         param.requires_grad = False
         
     return model, processor
+
+def speaker_describes(model, processor, image, problem, max_new_tokens=256):
+    """
+    Process a single speaker description.
+    """
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": problem},
+            ],
+        }
+    ]
+    text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+    inputs = processor(
+        text=text,
+        padding=True,
+        return_tensors="pt",
+    )
+    inputs = inputs.to(model.device)
+    with torch.no_grad():
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            generated_ids = model.generate(
+                **inputs, 
+                max_new_tokens=max_new_tokens,
+                do_sample=False,  # Deterministic for consistency
+                use_cache=True,   # Enable KV cache for speed
+                pad_token_id=processor.tokenizer.eos_token_id,
+            )   
+    generated_ids_trimmed = [
+        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+    ]
+    output_texts = processor.batch_decode(
+        generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+    )
+    return output_texts if len(output_texts) > 1 else output_texts[0]
+
+def llm_judge_batch(model, tokenizer, problems, max_new_tokens=128):
+    if not isinstance(problems, list):
+        problems = [problems]
+    messages_batch = [
+        [
+            {
+                "role": "user",
+                "content": problem,
+            }
+        ]
+        for problem in problems
+    ]
+    texts = [
+        tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False # Switches between thinking and non-thinking modes. Default is True.
+        )
+        for messages in messages_batch
+    ]
+    model_inputs = tokenizer(texts, return_tensors="pt", padding=True).to(model.device)
+    with torch.no_grad():
+        with torch.autocast(device_type="cuda", dtype=torch.float16):
+            generated_ids = model.generate(
+                **model_inputs,
+                max_new_tokens=max_new_tokens
+            )
+    # For each item in the batch, extract the generated output after the input
+    outputs = []
+    input_lens = [len(input_ids) for input_ids in model_inputs.input_ids]
+    for i, (gen_ids, in_len) in enumerate(zip(generated_ids, input_lens)):
+        output_ids = gen_ids[in_len:].tolist()
+        # parsing thinking content
+        try:
+            # rindex finding 151668 (</think>)
+            index = len(output_ids) - output_ids[::-1].index(151668)
+        except ValueError:
+            index = 0
+        # Remove pdb and debugging
+        # thinking_content = tokenizer.decode(output_ids[:index], skip_special_tokens=True).strip("\n")
+        content = tokenizer.decode(output_ids[index:], skip_special_tokens=True).strip("\n")
+        outputs.append(content)
+    return outputs
 
 def speaker_describes_batch(model, processor, images, problems, max_new_tokens=256):
     """
@@ -222,7 +311,7 @@ def process_batch_efficiently(speaker_model, processor, batch_items, batch_size=
         contents = speaker_describes_batch(speaker_model, processor, images, problems)
     return list(zip(names, contents))
     
-def create_data_loader(dataset, batch_size=4, shuffle=False, num_workers=0):
+def create_data_loader(dataset, batch_size=4, shuffle=False, num_workers=4):
     def collate_fn(batch):
         return batch  # Return as-is since we handle batching manually
     

@@ -10,8 +10,8 @@ import json
 import argparse
 import sys
 import re
-sys.path.insert(0, 'tests')
-from gen_descriptions import SimpleImageDataset, create_data_loader, setup_model, speaker_describes_batch, extract_answer_content
+sys.path.insert(0, 'src')
+from gen_des import SimpleImageDataset, create_data_loader, setup_model, speaker_describes_batch, extract_answer_content
 
 import torch
 from PIL import Image
@@ -249,7 +249,7 @@ def prepare_test_retrieval_items(args, desc_path, retriever):
     for item in tqdm(dataset, desc="Generating prompts"):
         path = item['path']
         # Only load image if needed elsewhere; not used here
-        results = retriever.image_search(path, k=6)
+        results = retriever.image_search(path, k=5)
         # Collect unique names and their descriptions
         descriptions, ret_paths = [], []
         for result in results:
@@ -263,7 +263,7 @@ def prepare_test_retrieval_items(args, desc_path, retriever):
             {'problem':prompt, 
             'path':item['path'], 
             'solution':item["name"],
-            'solution_desc':capt_dict[item['name']]
+            'solution_desc':capt_dict[item['name']],
             'ret_path':ret_paths})
     # Write once at the end
     # with open(test_ret_path, 'w') as f:
@@ -354,28 +354,31 @@ if __name__ == "__main__":
         images = [item['image'] if 'image' in item else Image.open(item['path']).convert('RGB') for item in batch]
         problems = [item['problem'] for item in batch]
         names = [item['solution'] for item in batch]
-        sol_desc = [item['solution_desc'] for item in batch]
+        sol_descs = [item['solution_desc'] for item in batch]
         paths = [item['path'] if 'path' in item else None for item in batch]
-        ret_path = [item['ret_path'] for item in batch]
+        ret_paths = [item['ret_path'] for item in batch]
         responses = speaker_describes_batch(model, processor, images, problems, max_new_tokens=128)
         # pred_names = [extract_answer_content(item) for item in responses]
         pred_names = [extract_answer_term(item, "Answer").lower().strip() for item in responses]
         # Ensure responses is a list
         if isinstance(pred_names, str):
             pred_names = [pred_names]
-        for path, name, problem, response, pred in zip(paths, names, problems, responses, pred_names):
+        for item in zip(paths, names, problems, responses, pred_names, ret_paths, sol_descs):
+            path, name, problem, response, pred, ret_path, sol_desc = item
             correct.append(int(pred == name))
             results.append({
                 "image_path": path,
                 "problem": problem,
                 "solution": name,
-                "solution_desc":solution_desc,
+                "solution_desc":sol_desc,
                 "ret_paths":ret_path,
                 "response": response,
                 "pred_name": pred
             })
         torch.cuda.empty_cache()
-    results_path = f'example_database/{args.data_name}/{args.category}/results_{args.model_type}.json'
+    savedir = f'results/{args.data_name}/{args.category}'
+    os.makedirs(savedir, exist_ok=True)
+    results_path = f'{savedir}/results_{args.model_type}.json'
     accuracy = sum(correct) / len(correct)
     output = {
         "accuracy": accuracy,
