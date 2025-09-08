@@ -383,7 +383,7 @@ if __name__ == "__main__":
         if args.model_type == 'original':
             model_path = "Qwen/Qwen2-VL-2B-Instruct"
         else:
-            model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.category}"
+            model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.category}_2"
         speaker_model, speaker_processor = setup_model(model_path)
         args.speaker_model = speaker_model
         args.speaker_processor = speaker_processor

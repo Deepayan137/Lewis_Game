@@ -82,9 +82,12 @@ class SimpleImageDataset(Dataset):
         name = image_path.split('/')[-2]
         # Load image as PIL Image
         image = Image.open(image_path).convert('RGB')
-        problem =  f"""Describe the {self.category} in the image so that it can be distinguished from other {self.category} objects. DO NOT mention the background or location of the object. Output in the format: "{self.category}: [concise distinguishing qualities]"
-        Output the thinking process in <think> </think> and the personalized caption in <answer> </answer> tags. The output answer format should be as follows: <think> ... </think> <answer> ... </answer>. Please strictly follow the format.
-        """
+        # problem =  f"""Describe the {self.category} in the image so that it can be distinguished from other {self.category} objects. DO NOT mention the background or location of the object. Output in the format: "{self.category}: [concise distinguishing qualities]"
+        # Output the thinking process in <think> </think> and the personalized caption in <answer> </answer> tags. The output answer format should be as follows: <think> ... </think> <answer> ... </answer>. Please strictly follow the format.
+        # """
+        category = self.category
+        problem = f"""Describe the {category} in the image so that it can be distinguished from other {category} objects. Do NOT mention background, location or state of the object. Write exactly one fluent sentence that begins with "The {category}" and highlights 3–4 visible distinguishing attributes (e.g., color, pattern, shape, unique marks, material if obvious). Keep the description concise and natural, without using lists or brackets.</answer>. 
+        Output the thinking process in <think> </think> and the personalized caption in <answer> </answer> tags. The output answer format should be as follows: <think> ... </think> <answer> ... </answer>. Please strictly follow the format."""
         return {
             'image': image,
             'problem': problem,
@@ -281,7 +284,8 @@ def speaker_describes_batch(model, processor, images, problems, max_new_tokens=2
                 do_sample=False,  # Deterministic for consistency
                 use_cache=True,   # Enable KV cache for speed
                 pad_token_id=processor.tokenizer.eos_token_id,
-                temperature=1.0,  # Add explicit temperature
+                temperature=0.4,  # Add explicit temperature
+                top_p=0.9,
                 repetition_penalty=1.0  # Add repetition penalty
             )
     
@@ -308,7 +312,7 @@ def process_batch_efficiently(speaker_model, processor, batch_items, batch_size=
 
     # Batch speaker descriptions
     with torch.no_grad():
-        contents = speaker_describes_batch(speaker_model, processor, images, problems)
+        contents = speaker_describes_batch(speaker_model, processor, images, problems, max_new_tokens=164)
     return list(zip(names, contents))
     
 def create_data_loader(dataset, batch_size=4, shuffle=False, num_workers=4):
@@ -346,7 +350,7 @@ if __name__ == "__main__":
     if args.model_type == 'original':
         model_path = "Qwen/Qwen2-VL-2B-Instruct"
     else:
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.category}"
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.category}_test_test_subset"
     
     print("Loading models...")
     start_time = time.time()
@@ -354,6 +358,7 @@ if __name__ == "__main__":
     # Setup models with optimizations
     speaker_model, processor = setup_model(model_path)
     dataset = SimpleImageDataset(
+        # json_path="/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_/train_seed_42.json"",
         category=args.category,  # Replace with your actual category
         split="train"
     )

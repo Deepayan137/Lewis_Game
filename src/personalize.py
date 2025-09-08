@@ -26,6 +26,7 @@ class SimpleClipRetriever:
                  create_index=False,
                  batch_size=6,
                  dataset='PerVA',
+                 json_path=None,
                  category='decoration',
                  device="cuda",
                  clip_model="openai/clip-vit-large-patch14-336"):
@@ -35,6 +36,9 @@ class SimpleClipRetriever:
         self.embed_dim = embed_dim
         self.category = category
         self.target_dir = f'example_database/{dataset}/{category}'
+        self.json_path = json_path
+        if not self.json_path:
+            self.json_path = "/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_/train_test_val_seed_42_num_train_1.json"
         # Initialize CLIP model
         self.clip_model = CLIPModel.from_pretrained(clip_model).to(self.device)
         self.feature_extractor = CLIPProcessor.from_pretrained(clip_model)
@@ -50,7 +54,7 @@ class SimpleClipRetriever:
             self._load_index()
         
     def _create_index(self):
-        json_path = "/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_/train_test_val_seed_42_num_train_1.json"
+        json_path = self.json_path
         with open(json_path, 'r') as f:
             data = json.load(f)
         category = self.category
@@ -241,8 +245,15 @@ def get_prompt(descriptions, category):
 def prepare_test_retrieval_items(args, desc_path, retriever):
     test_ret_path = f'example_database/{args.data_name}/{args.category}/test_ret_{args.model_type}.json'
     # if not os.path.exists(test_ret_path):
+    # output_path = f'example_database/{args.data_name}/{args.category}/llm_judge_prompt_{args.model_type}.json'
+    # if os.path.exists(output_path):
+    #     print(f"Output file {output_path} already exists. Loading and returning existing data.")
+    #     with open(output_path, 'r') as f:
+    #         return json.load(f)
     print("Preparing ret data")
-    dataset = SimpleImageDataset(args.category, split='test')
+    dataset = SimpleImageDataset(args.category, 
+        # json_path="/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_/test_seed_42.json",
+        split='test')
     with open(desc_path, 'r') as f:
         capt_dict = json.load(f)
     new_items = []
@@ -330,7 +341,9 @@ if __name__ == "__main__":
     parser.add_argument("--model_type", type=str, default='original',
                        help='Model type: original or finetuned')
     args = parser.parse_args()
-    retriever = SimpleClipRetriever(category=args.category, create_index=True)
+    retriever = SimpleClipRetriever(category=args.category, 
+        # json_path="/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_/test_seed_42.json", 
+        create_index=True)
     model_path = "Qwen/Qwen2-VL-7B-Instruct"
     if args.model_type == 'original':
         desc_path = f'example_database/PerVA/{args.category}/descriptions_original.json'
