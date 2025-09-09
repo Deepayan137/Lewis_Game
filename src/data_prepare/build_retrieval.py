@@ -241,6 +241,7 @@ class HierarchicalClipRetriever():
 def main():
     parser = argparse.ArgumentParser(description="Create training batches for Lewis game")
     parser.add_argument('--root', type=str, default="manifests/PerVA")
+    parser.add_argument('--category', type=str, default="clothe")
     parser.add_argument('--catalog_file', type=str, default="train_catalog_seed_23.json")
     parser.add_argument('--distractors', type=int, default=4)
     parser.add_argument('--out_dir', type=str, default='outputs/PerVA', help='Optional output directory (defaults to --root)')
@@ -251,39 +252,39 @@ def main():
         data = json.load(f)
     categories = data.keys()
     all_data = []
-    for category in categories:
-        if category in ['clothe']:
-            concepts = data[category].keys()
-            retriever = HierarchicalClipRetriever(
-                data_dir=args.root,
-                out_dir=args.out_dir,
-                catalog_file=args.catalog_file,
-                dir_names=concepts)
-            out_path = f'{args.out_dir}/{category}/seed_{seed}/'
-            if not os.path.exists(os.path.join(out_path, 'class_mappings.json')):
-                print("Creating Index")
-                retriever._create_hierarchical_index(category, seed)
-            else:
-                print("Loading Index")
-                retriever._load_hierarchical_index(category, seed)
-            concept_list = []
-            for concept in tqdm(concepts):
-                for image_path in data[category][concept]['test']:
-                    remaining_paths = [item for item in data[category][concept]['test'] if item != image_path]
-                    batch = retriever.create_training_batch(image_path, remaining_paths, category, num_distractors=args.distractors)
-                    concept_list.append({
-                        "query_path":batch['query_path'],
-                        "ret_paths":batch['image_paths'],
-                        'label':batch['target_index'],
-                        'category':batch['category'],
-                    })
-            os.makedirs(os.path.join(args.out_dir, category, f'seed_{seed}'), exist_ok=True)
-            K = args.distractors + 1
-            category_json_path = os.path.join(args.out_dir, category, f'seed_{seed}', f'retrieval_top{K}.json')
-            with open(category_json_path, 'w') as f:
-                json.dump(concept_list, f, indent=2)
-            print(f"{category} data saved at {category_json_path}")
-            all_data.extend(concept_list)
+    # for category in categories:
+    #     if category in ['clothe']:
+    concepts = data[category].keys()
+    retriever = HierarchicalClipRetriever(
+        data_dir=args.root,
+        out_dir=args.out_dir,
+        catalog_file=args.catalog_file,
+        dir_names=concepts)
+    out_path = f'{args.out_dir}/{category}/seed_{seed}/'
+    if not os.path.exists(os.path.join(out_path, 'class_mappings.json')):
+        print("Creating Index")
+        retriever._create_hierarchical_index(category, seed)
+    else:
+        print("Loading Index")
+        retriever._load_hierarchical_index(category, seed)
+    concept_list = []
+    for concept in tqdm(concepts):
+        for image_path in data[category][concept]['test']:
+            remaining_paths = [item for item in data[category][concept]['test'] if item != image_path]
+            batch = retriever.create_training_batch(image_path, remaining_paths, category, num_distractors=args.distractors)
+            concept_list.append({
+                "query_path":batch['query_path'],
+                "ret_paths":batch['image_paths'],
+                'label':batch['target_index'],
+                'category':batch['category'],
+            })
+    os.makedirs(os.path.join(args.out_dir, category, f'seed_{seed}'), exist_ok=True)
+    K = args.distractors + 1
+    category_json_path = os.path.join(args.out_dir, category, f'seed_{seed}', f'retrieval_top{K}.json')
+    with open(category_json_path, 'w') as f:
+        json.dump(concept_list, f, indent=2)
+    print(f"{category} data saved at {category_json_path}")
+    all_data.extend(concept_list)
 
 
 if __name__ == "__main__":
