@@ -1,0 +1,12 @@
+# Ignore log/output files
+*.out
+*.txt
+
+# Ignore images
+*.jpg
+*.jpeg
+*.png
+*.json
+*.zip
+*.faiss
+*.pyc

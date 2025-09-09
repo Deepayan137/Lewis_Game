@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 from datasets import Dataset, DatasetDict
 from tqdm.auto import tqdm
-
+from PIL import Image
 
 # fixed base save directory per your request
 BASE_SAVE_DIR = "/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_data"
@@ -19,10 +19,10 @@ def _resolve_path(root: str, p: str) -> str:
     return os.path.join(root, p)
 
 
-def json_to_dataset_dict(retrieval_json_path: str, root: str = None):
+def json_to_dataset_dict(ret_json, root, seed):
+    retrieval_json_path = os.path.join(root, f'seed_{seed}', ret_json)
     with open(retrieval_json_path, "r") as f:
         data = json.load(f)
-
     rows = []
     for item in tqdm(data, desc="Processing retrieval entries"):
         # accept either field name
@@ -31,10 +31,9 @@ def json_to_dataset_dict(retrieval_json_path: str, root: str = None):
         if query_path_raw is None:
             # skip malformed entry
             continue
-
-        query_abs = _resolve_path(root, query_path_raw)
+        query_abs = _resolve_path('/gpfs/projects/ehpc171/ddas/projects/Lewis_Game', query_path_raw)
         # make retrieved absolute where possible
-        retrieved_abs = [_resolve_path(root, rp) for rp in ret_list]
+        retrieved_abs = [_resolve_path('/gpfs/projects/ehpc171/ddas/projects/Lewis_Game', rp) for rp in ret_list]
 
         # simple validation: warn if query path missing
         if not os.path.exists(query_abs):
@@ -54,8 +53,8 @@ def json_to_dataset_dict(retrieval_json_path: str, root: str = None):
         uid = Path(query_abs).stem
 
         rows.append({
-            "image_path": query_abs,
-            "retrieved_paths": retrieved_abs,
+            "image": Image.open(query_abs).convert('RGB'),
+            "ret_paths": retrieved_abs,
             "speaker_problem": speaker_problem,
             "solution": item.get("label"),
             "category": category,
@@ -66,6 +65,29 @@ def json_to_dataset_dict(retrieval_json_path: str, root: str = None):
     dataset = Dataset.from_list(rows)
     ds_dict = DatasetDict({"train": dataset})
     return ds_dict
+
+def print_dataset_statistics(ds_dict: DatasetDict):
+    """
+    Print statistics for each split in the DatasetDict.
+    Shows number of examples, and unique values for key fields.
+    """
+    for split, ds in ds_dict.items():
+        print(f"=== Split: {split} ===")
+        print(f"Number of examples: {len(ds)}")
+        if len(ds) == 0:
+            continue
+        # Print unique categories
+        if "category" in ds.column_names:
+            categories = set(ds["category"])
+            print(f"Unique categories: {categories}")
+        # Print number of unique solutions (labels)
+        if "solution" in ds.column_names:
+            unique_solutions = set(ds["solution"])
+            print(f"Number of unique solutions: {len(unique_solutions)}")
+        # Print example of a row
+        print("Example row:")
+        print(ds[0])
+        print("-" * 40)
 
 
 def save_dataset_dict(ds_dict: DatasetDict, save_dirname: str):
@@ -79,21 +101,22 @@ def save_dataset_dict(ds_dict: DatasetDict, save_dirname: str):
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Convert retrieval JSON to HF Dataset and save to disk.")
-    ap.add_argument("--ret_json", default="clothe_retrieval_top5_subset.json")
-    ap.add_argument("--root", default="/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_/",
-                    help="Optional root to prefix relative image paths found in the retrieval JSON.")
-    ap.add_argument("--dataset", default="PerVA",
-                    help="Short name for dataset (used as part of folder naming if you like).")
+    ap.add_argument("--root", default="outputs/PerVA")
+    ap.add_argument("--ret_json", default="retrieval_top5.json")
+    ap.add_argument("--seed", type=int, default=23, help="Random seed for reproducibility.")
     ap.add_argument("--save_dirname", default="PerVA_clothe_test_subset",
                     help="Final folder name (under the fixed share_data base) where dataset will be saved.")
+    
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
-    ds = json_to_dataset_dict(args.ret_json, root=args.root)
+    ds = json_to_dataset_dict(args.ret_json, args.root, args.seed)
     # optionally you could include args.dataset into the save_dirname if that helps naming consistency
+    print_dataset_statistics(ds)
     out = save_dataset_dict(ds, args.save_dirname)
+    print(f"Dataset saved in: {args.save_dirname}")
     # quick sanity check load
     loaded = DatasetDict.load_from_disk(out)
     print("Loaded dataset summary:")

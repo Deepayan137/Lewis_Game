@@ -7,6 +7,7 @@ from transformers import CLIPModel, CLIPProcessor
 from tqdm import tqdm
 import os
 import json
+import random
 import argparse
 import sys
 import re
@@ -29,13 +30,16 @@ class SimpleClipRetriever:
                  json_path=None,
                  category='decoration',
                  device="cuda",
-                 clip_model="openai/clip-vit-large-patch14-336"):
+                 clip_model="openai/clip-vit-large-patch14-336",
+                 seed=42):
         
         self.device = device
         self.batch_size = batch_size
         self.embed_dim = embed_dim
         self.category = category
-        self.target_dir = f'example_database/{dataset}/{category}'
+        self.seed = seed
+        random.seed(seed)
+        self.target_dir = f'outputs/{dataset}/{category}'
         self.json_path = json_path
         if not self.json_path:
             self.json_path = "/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_/train_test_val_seed_42_num_train_1.json"
@@ -62,7 +66,8 @@ class SimpleClipRetriever:
         image_paths = []
         for dir_name in tqdm(dir_names, desc="Processing classes"):
             filepaths = data[category][dir_name]['train']
-            image_paths.extend(filepaths)
+            file_path = random.choice(filepaths)
+            image_paths.append(file_path)
         print(f"Creating index from {len(image_paths)} images")
         
         all_features = []
@@ -243,20 +248,24 @@ def get_prompt(descriptions, category):
     return prompt
 
 def prepare_test_retrieval_items(args, desc_path, retriever):
-    test_ret_path = f'example_database/{args.data_name}/{args.category}/test_ret_{args.model_type}.json'
+    test_ret_path = f'outputs/{args.data_name}/{args.category}/test_ret_{args.model_type}.json'
     # if not os.path.exists(test_ret_path):
-    # output_path = f'example_database/{args.data_name}/{args.category}/llm_judge_prompt_{args.model_type}.json'
+    # output_path = f'outputs/{args.data_name}/{args.category}/llm_judge_prompt_{args.model_type}.json'
     # if os.path.exists(output_path):
     #     print(f"Output file {output_path} already exists. Loading and returning existing data.")
     #     with open(output_path, 'r') as f:
     #         return json.load(f)
     print("Preparing ret data")
-    dataset = SimpleImageDataset(args.category, 
-        # json_path="/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_/test_seed_42.json",
-        split='test')
+    dataset = SimpleImageDataset(
+        json_path=os.path.join(f'manifests/{args.data_name}', args.catalog_file),
+        category=args.category,
+        split="test",
+        seed=args.seed
+    )
     with open(desc_path, 'r') as f:
         capt_dict = json.load(f)
     new_items = []
+    # import pdb;pdb.set_trace()
     for item in tqdm(dataset, desc="Generating prompts"):
         path = item['path']
         # Only load image if needed elsewhere; not used here
@@ -336,24 +345,30 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Optimized Lewis Game Evaluation')
     parser.add_argument("--data_name", type=str, default='PerVA',
                        help='name of the dataset')
+    parser.add_argument("--catalog_file", type=str, default="test_catalog_seed_23.json",
+                       help="Path to the catalog JSON file")
     parser.add_argument("--category", type=str, default='clothe',
                        help='Model type: original or finetuned')
+    parser.add_argument("--seed", type=int, default=23,
+                       help='random seed')
     parser.add_argument("--model_type", type=str, default='original',
-                       help='Model type: original or finetuned')
+                       help='Model type: original or finetuned')                   
     args = parser.parse_args()
+    
     retriever = SimpleClipRetriever(category=args.category, 
-        # json_path="/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_/test_seed_42.json", 
-        create_index=True)
+        json_path=os.path.join(f'manifests/{args.data_name}', args.catalog_file),
+        create_index=True,
+        seed=args.seed)
     model_path = "Qwen/Qwen2-VL-7B-Instruct"
     if args.model_type == 'original':
-        desc_path = f'example_database/PerVA/{args.category}/descriptions_original.json'
+        desc_path = f'outputs/PerVA/{args.category}/descriptions_original.json'
     else:
         # model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.category}"
-        desc_path = f'example_database/PerVA/{args.category}/descriptions_finetuned.json'
+        desc_path = f'outputs/PerVA/{args.category}/descriptions_finetuned.json'
     
     with open(desc_path) as f:
         capt_dict = json.load(f)    
-    # test_ret_path = f'example_database/{args.data_name}/{args.category}/test_ret_{args.model_type}.json'
+    # test_ret_path = f'outputs/{args.data_name}/{args.category}/test_ret_{args.model_type}.json'
     ret_items = prepare_test_retrieval_items(args, desc_path, retriever)
     print(f"Loading model from {model_path}")
     model, processor = setup_model(model_path)

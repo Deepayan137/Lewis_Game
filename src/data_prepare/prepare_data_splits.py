@@ -5,14 +5,13 @@ import random
 import argparse
 
 def split_data(root, 
-        json_filename,
-        dataname, 
+        catalog_name,
         seed=23, 
         train_fraction=0.20, 
         num_train_per_category=None, 
         out_dir=None):
     random.seed(seed)
-    json_path = os.path.join(root, json_filename)
+    json_path = os.path.join(root, catalog_name)
     if not os.path.exists(json_path):
         raise FileNotFoundError(f"Catalog JSON not found: {json_path}")
 
@@ -48,8 +47,8 @@ def split_data(root,
         for con in test_concepts:
             te_data[category][con] = data[category][con]
 
-    train_json_path = os.path.join(out_dir, f'{args.data_name}_catalogue_train_seed_{seed}.json')
-    test_json_path  = os.path.join(out_dir, f'{args.data_name}_catalogue_test_seed_{seed}.json')
+    train_json_path = os.path.join(out_dir, f'train_catalog_seed_{seed}.json')
+    test_json_path  = os.path.join(out_dir, f'test_catalog_seed_{seed}.json')
 
     with open(train_json_path, 'w') as f:
         json.dump(tr_data, f, indent=2)
@@ -62,26 +61,23 @@ def split_data(root,
 def main():
     parser = argparse.ArgumentParser(description="Divide train/test concepts for Lewis Game")
     parser.add_argument('--root', type=str,
-                        default="/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_",
+                        default="manifests/PerVA/",
                         help='Root directory for data')
-    parser.add_argument('--dataset', type=str,
-                        default="PerVA",
-                        help='name of the dataset')
-    parser.add_argument('--json_filename', type=str,
-                        default="train_test_val_seed_42_num_train_1.json",
+    parser.add_argument('--catalog_name', type=str,
+                        default="main_catalog.json",
                         help='JSON filename with data splits (catalogue)')
     parser.add_argument('--seed', type=int, default=23, help='Random seed for shuffling')
     parser.add_argument('--train-fraction', type=float, default=0.20,
                         help='Fraction of concepts per category to use for training (default 0.20)')
     parser.add_argument('--num-train', type=int, default=None,
                         help='If set, override fraction and use this many train concepts per category (min 1)')
-    parser.add_argument('--out-dir', type=str, default=None,
+    parser.add_argument('--out_dir', type=str, default=None,
                         help='Optional output directory (defaults to --root)')
     args = parser.parse_args()
 
     split_data(
         root=args.root,
-        json_filename=args.json_filename,
+        catalog_name=args.catalog_name,
         seed=args.seed,
         train_fraction=args.train_fraction,
         num_train_per_category=args.num_train,
@@ -90,3 +86,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+#USAGE
+#python src/data_prepare/prepare_data_splits.py  --root manifests/PerVA/ --catalog_name main_catalog.json --seed 23 --out_dir manifests/PerVA/

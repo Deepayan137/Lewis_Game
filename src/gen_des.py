@@ -21,14 +21,14 @@ import os
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
-
+import random
 
 class SimpleImageDataset(Dataset):
     """
     Simple dataset that returns PIL images based on index
     """
     
-    def __init__(self, category, json_path=None, split='train'):
+    def __init__(self, category, json_path=None, split='train', seed=42):
         """
         Initialize the dataset
         
@@ -46,7 +46,7 @@ class SimpleImageDataset(Dataset):
         
         # Load and process the JSON data
         self.image_paths = self._load_image_paths()
-        
+        random.seed(seed)
         print(f"Dataset initialized with {len(self.image_paths)} images from category '{category}' ({split} split)")
     
     def _load_image_paths(self):
@@ -66,7 +66,11 @@ class SimpleImageDataset(Dataset):
                 continue
                 
             filepaths = data[self.category][dir_name][self.split]
-            image_paths.extend(filepaths)
+            if filepaths and self.split == 'train':
+                file_path = random.choice(filepaths)
+                image_paths.append(file_path)
+            else:
+                image_paths.extend(filepaths)
         
         return image_paths
     
@@ -86,8 +90,15 @@ class SimpleImageDataset(Dataset):
         # Output the thinking process in <think> </think> and the personalized caption in <answer> </answer> tags. The output answer format should be as follows: <think> ... </think> <answer> ... </answer>. Please strictly follow the format.
         # """
         category = self.category
-        problem = f"""Describe the {category} in the image so that it can be distinguished from other {category} objects. Do NOT mention background, location or state of the object. Write exactly one fluent sentence that begins with "The {category}" and highlights 3–4 visible distinguishing attributes (e.g., color, pattern, shape, unique marks, material if obvious). Keep the description concise and natural, without using lists or brackets.</answer>. 
-        Output the thinking process in <think> </think> and the personalized caption in <answer> </answer> tags. The output answer format should be as follows: <think> ... </think> <answer> ... </answer>. Please strictly follow the format."""
+        # problem = f"""Describe the {category} in the image so that it can be distinguished from other {category} objects. Do NOT mention background, location or state of the object. Write exactly one fluent sentence that begins with "The {category}" and highlights 3–4 visible distinguishing attributes (e.g., color, pattern, shape, unique marks, material if obvious). Keep the description concise and natural, without using lists or brackets.</answer>. 
+        # Output the thinking process in <think> </think> and the personalized caption in <answer> </answer> tags. The output answer format should be as follows: <think> ... </think> <answer> ... </answer>. Please strictly follow the format."""
+        problem = (
+            f'Describe the {category} in the image so that it can be distinguished from other {category} objects. '
+            "Do NOT mention background, location or state of the object. "
+            f'Write exactly one fluent sentence that begins with "The {category}" and highlights 3–4 visible distinguishing attributes. '
+            "Keep the description concise and natural, without using lists or brackets. "
+            "Output the thinking process in <think> </think> and the personalized caption in <answer> </answer> tags."
+        )
         return {
             'image': image,
             'problem': problem,
@@ -312,7 +323,7 @@ def process_batch_efficiently(speaker_model, processor, batch_items, batch_size=
 
     # Batch speaker descriptions
     with torch.no_grad():
-        contents = speaker_describes_batch(speaker_model, processor, images, problems, max_new_tokens=164)
+        contents = speaker_describes_batch(speaker_model, processor, images, problems, max_new_tokens=128)
     return list(zip(names, contents))
     
 def create_data_loader(dataset, batch_size=4, shuffle=False, num_workers=4):
@@ -331,10 +342,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Optimized Lewis Game Evaluation')
     parser.add_argument("--data_name", type=str, default='PerVA',
                        help='name of the dataset')
+    parser.add_argument("--catalog_file", type=str, default="test_catalog_seed_23.json",
+                       help="Path to the catalog JSON file")
     parser.add_argument("--category", type=str, default='clothe',
                        help='Model type: original or finetuned')
     parser.add_argument("--model_type", type=str, default='original',
                        help='Model type: original or finetuned')
+    parser.add_argument("--seed", type=int, default=42,
+                       help='random seed')
     parser.add_argument("--batch_size", type=int, default=4,
                        help='Batch size for processing')
     parser.add_argument("--speaker_batch_size", type=int, default=4,
@@ -352,15 +367,16 @@ if __name__ == "__main__":
     else:
         model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.category}_test_test_subset"
     
-    print("Loading models...")
+    print(f"Loading model from {model_path}")
     start_time = time.time()
     
     # Setup models with optimizations
     speaker_model, processor = setup_model(model_path)
     dataset = SimpleImageDataset(
-        # json_path="/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_/train_seed_42.json"",
-        category=args.category,  # Replace with your actual category
-        split="train"
+        json_path=os.path.join(f'manifests/{args.data_name}', args.catalog_file),
+        category=args.category,
+        split="train",
+        seed=args.seed
     )
     # Create data loader
     data_loader = create_data_loader(dataset, batch_size=4)
@@ -391,7 +407,7 @@ if __name__ == "__main__":
         #         results.append({"description": "Error", "accuracy": 0.0})
     
     total_eval_time = time.time() - eval_start_time
-    savedir = os.path.join('example_database', args.data_name, args.category)
+    savedir = os.path.join('outputs', args.data_name, args.category)
     os.makedirs(savedir, exist_ok=True)
     result_dict = {}
     for name, desc in results:

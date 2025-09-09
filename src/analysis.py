@@ -70,17 +70,17 @@ class PredictionAnalyzer:
         fig, axes = plt.subplots(grid_size[0], grid_size[1], figsize=(15, 10))
         fig.suptitle('Query Image and Retrieved Images', fontsize=16, y=0.95)
         # Load and display query image (top-left)
-        try:
-            query_img = Image.open(query_img_path)
-            # query_name = query_image_path.split('/')[-2]
-            axes[0, 0].imshow(query_img)
-            query_name = query_img_path.split('/')[-2]
-            axes[0, 0].set_title(query_name, fontsize=12, fontweight='bold')
-            axes[0, 0].axis('off')
-        except Exception as e:
-            axes[0, 0].text(0.5, 0.5, f'Query Image\nNot Found', 
-                           ha='center', va='center', transform=axes[0, 0].transAxes)
-            axes[0, 0].axis('off')
+        # try:
+        query_img = Image.open(query_img_path)
+        # query_name = query_image_path.split('/')[-2]
+        axes[0, 0].imshow(query_img)
+        query_name = query_img_path.split('/')[-2]
+        axes[0, 0].set_title(query_name, fontsize=12, fontweight='bold')
+        axes[0, 0].axis('off')
+    # except Exception as e:
+        axes[0, 0].text(0.5, 0.5, f'Query Image\nNot Found', 
+                        ha='center', va='center', transform=axes[0, 0].transAxes)
+        axes[0, 0].axis('off')
         
         # Load and display retrieved images
         positions = [(0, 1), (0, 2), (1, 0), (1, 1), (1, 2)]
@@ -185,8 +185,8 @@ if __name__ == "__main__":
     # Initialize analyzer
     analyzer = PredictionAnalyzer(
         original_json_path="results/PerVA/clothe/results_original.json",
-        finetuned_json_path="results/PerVA/clothe/results_finetuned.json",
-        output_dir="analysis"
+        finetuned_json_path="results/PerVA/clothe/results_finetune.json",
+        output_dir="analysis2"
     )
     
     # Run complete analysis

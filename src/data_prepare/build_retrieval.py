@@ -25,40 +25,43 @@ DEFAULT_CLIP_MODEL = 'openai/clip-vit-large-patch14-336'
 
 class HierarchicalClipRetriever():
     def __init__(self, 
-        data_dir, 
-        embed_dim = 768, 
-        create_index = False, 
+        data_dir,
+        out_dir,
+        embed_dim = 768,
+        # create_index = False, 
         batch_size = 6, 
         device = "cuda", 
         vis_feat_extractor='clip',
-        catalogue_file="train_seed_42.json",
+        catalog_file="train_catalog_seed_42.json",
         dir_names=None,
         clip_model_name: str = DEFAULT_CLIP_MODEL):
         
         self.device = device
         self.batch_size = batch_size
         self.data_dir = data_dir
+        self.out_dir = out_dir
         self.vis_feat_extractor = vis_feat_extractor
         self.clip_model_name = clip_model_name
         self.clip_model = CLIPModel.from_pretrained(self.clip_model_name).to(self.device)
         self.feature_extractor = CLIPProcessor.from_pretrained(self.clip_model_name)
         self.root = os.path.dirname(data_dir)
-        self.catalogue_path = os.path.join(data_dir, catalogue_file)
+        self.catalog_path = os.path.join(data_dir, catalog_file)
         self.class_index = faiss.IndexFlatIP(embed_dim)  # Class mean embeddings
         self.image_index = faiss.IndexFlatIP(embed_dim)  # Individual image embeddings
         
-        if create_index:
-            self._create_hierarchical_index()
-        else:
-            self._load_hierarchical_index()
+        # if create_index:
+        #     self._create_hierarchical_index()
+        # else:
+        #     self._load_hierarchical_index()
     
-    def _create_hierarchical_index(self):
+    def _create_hierarchical_index(self, category, seed):
         """Create both class-level and image-level indices"""
-        with open(self.catalogue_path, 'r') as f:
+        with open(self.catalog_path, 'r') as f:
             data = json.load(f)
-        category = os.path.basename(self.data_dir)
+        # category = os.path.basename(self.data_dir)
         dir_names = data[category].keys()
         print(f"Creating hierarchical database from {self.data_dir}")
+        os.makedirs(os.path.join(self.out_dir, category), exist_ok=True)
         self.class_id2name = {}  # class_id -> class_name
         self.image_id2info = {}  # image_id -> {'path': path, 'class_name': name, 'class_id': id}
         self.class_name2images = defaultdict(list)  # class_name -> list of image_ids
@@ -100,24 +103,24 @@ class HierarchicalClipRetriever():
             
             class_id += 1
         
-        faiss.write_index(self.class_index, f"{self.data_dir}/class_means.faiss")
-        faiss.write_index(self.image_index, f"{self.data_dir}/individual_images.faiss")
+        faiss.write_index(self.class_index, f"{self.out_dir}/{category}/seed_{seed}/class_means.faiss")
+        faiss.write_index(self.image_index, f"{self.out_dir}/{category}/seed_{seed}/individual_images.faiss")
         
-        with open(f'{self.data_dir}/class_mappings.json', 'w') as f:
+        with open(f'{self.out_dir}/{category}/seed_{seed}/class_mappings.json', 'w') as f:
             json.dump({
                 'class_id2name': self.class_id2name,
                 'image_id2info': self.image_id2info,
                 'class_name2images': dict(self.class_name2images)
             }, f)
     
-    def _load_hierarchical_index(self):
+    def _load_hierarchical_index(self, category, seed):
         """Load pre-built indices and mappings"""
-        print(f"Loading hierarchical database from {self.data_dir}")
+        print(f"Loading hierarchical database from {self.out_dir}/seed_{seed}/{category}")
         
-        self.class_index = faiss.read_index(f"{self.data_dir}/class_means.faiss")
-        self.image_index = faiss.read_index(f"{self.data_dir}/individual_images.faiss")
+        self.class_index = faiss.read_index(f"{self.out_dir}/{category}/seed_{seed}/class_means.faiss")
+        self.image_index = faiss.read_index(f"{self.out_dir}/{category}/seed_{seed}/individual_images.faiss")
         
-        with open(f'{self.data_dir}/class_mappings.json', 'r') as f:
+        with open(f'{self.out_dir}/{category}/class_mappings.json', 'r') as f:
             mappings = json.load(f)
             self.class_id2name = {int(k): v for k, v in mappings['class_id2name'].items()}
             self.image_id2info = {int(k): v for k, v in mappings['image_id2info'].items()}
@@ -237,24 +240,32 @@ class HierarchicalClipRetriever():
 
 def main():
     parser = argparse.ArgumentParser(description="Create training batches for Lewis game")
-    parser.add_argument('--root', type=str, default="/gpfs/projects/ehpc171/ddas/projects/YoLLaVA/yollava-data/train_")
-    parser.add_argument('--catalogue_file', type=str, default="PerVA_catalogue_train_seed_23.json")
+    parser.add_argument('--root', type=str, default="manifests/PerVA")
+    parser.add_argument('--catalog_file', type=str, default="train_catalog_seed_23.json")
     parser.add_argument('--distractors', type=int, default=4)
+    parser.add_argument('--out_dir', type=str, default='outputs/PerVA', help='Optional output directory (defaults to --root)')
     args = parser.parse_args()
-    catalogue_path = os.path.join(args.root, args.catalogue_file)
-    with open(catalogue_path, 'r') as f:
+    seed = int(args.catalog_file.split('_')[-1].split('.')[0])
+    catalog_path = os.path.join(args.root, args.catalog_file)
+    with open(catalog_path, 'r') as f:
         data = json.load(f)
     categories = data.keys()
     all_data = []
     for category in categories:
         if category in ['clothe']:
-            data_dir = os.path.join(args.root, category)
             concepts = data[category].keys()
             retriever = HierarchicalClipRetriever(
-                data_dir=data_dir,
-                create_index=True,  # Set to True for first time
-                dir_names=concepts
-            )
+                data_dir=args.root,
+                out_dir=args.out_dir,
+                catalog_file=args.catalog_file,
+                dir_names=concepts)
+            out_path = f'{args.out_dir}/{category}/seed_{seed}/'
+            if not os.path.exists(os.path.join(out_path, 'class_mappings.json')):
+                print("Creating Index")
+                retriever._create_hierarchical_index(category, seed)
+            else:
+                print("Loading Index")
+                retriever._load_hierarchical_index(category, seed)
             concept_list = []
             for concept in tqdm(concepts):
                 for image_path in data[category][concept]['test']:
@@ -266,7 +277,9 @@ def main():
                         'label':batch['target_index'],
                         'category':batch['category'],
                     })
-            category_json_path = os.path.join(root, f'{category}_retrieval_top{args.distractors}_subset.json')
+            os.makedirs(os.path.join(args.out_dir, category, f'seed_{seed}'), exist_ok=True)
+            K = args.distractors + 1
+            category_json_path = os.path.join(args.out_dir, category, f'seed_{seed}', f'retrieval_top{K}.json')
             with open(category_json_path, 'w') as f:
                 json.dump(concept_list, f, indent=2)
             print(f"{category} data saved at {category_json_path}")
