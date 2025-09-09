@@ -19,8 +19,8 @@ def _resolve_path(root: str, p: str) -> str:
     return os.path.join(root, p)
 
 
-def json_to_dataset_dict(ret_json, root, seed):
-    retrieval_json_path = os.path.join(root, f'seed_{seed}', ret_json)
+def json_to_dataset_dict(ret_json, root, category, seed):
+    retrieval_json_path = os.path.join(root, category, f'seed_{seed}', ret_json)
     with open(retrieval_json_path, "r") as f:
         data = json.load(f)
     rows = []
@@ -102,21 +102,21 @@ def save_dataset_dict(ds_dict: DatasetDict, save_dirname: str):
 def parse_args():
     ap = argparse.ArgumentParser(description="Convert retrieval JSON to HF Dataset and save to disk.")
     ap.add_argument("--root", default="outputs/PerVA")
+    ap.add_argument("--category", default="clothe")
     ap.add_argument("--ret_json", default="retrieval_top5.json")
     ap.add_argument("--seed", type=int, default=23, help="Random seed for reproducibility.")
-    ap.add_argument("--save_dirname", default="PerVA_clothe_test_subset",
-                    help="Final folder name (under the fixed share_data base) where dataset will be saved.")
     
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
-    ds = json_to_dataset_dict(args.ret_json, args.root, args.seed)
+    ds = json_to_dataset_dict(args.ret_json, args.root, args.category, args.seed)
     # optionally you could include args.dataset into the save_dirname if that helps naming consistency
     print_dataset_statistics(ds)
-    out = save_dataset_dict(ds, args.save_dirname)
-    print(f"Dataset saved in: {args.save_dirname}")
+    save_dirname = f"PerVA_{args.category}_test_subset"
+    out = save_dataset_dict(ds, save_dirname)
+    print(f"Dataset saved in: {save_dirname}")
     # quick sanity check load
     loaded = DatasetDict.load_from_disk(out)
     print("Loaded dataset summary:")

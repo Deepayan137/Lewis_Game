@@ -26,7 +26,7 @@ class SimpleClipRetriever:
         self.category = category
         self.seed = seed
         random.seed(seed)
-        self.target_dir = f'outputs/{dataset}/{category}'
+        self.target_dir = f'outputs/{dataset}/{category}/seed_{seed}'
         self.json_path = json_path
         # Initialize CLIP model
         self.clip_model = CLIPModel.from_pretrained(clip_model).to(self.device)

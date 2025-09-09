@@ -87,7 +87,7 @@ def main():
     if args.model_type == 'original':
         model_path = "Qwen/Qwen2-VL-2B-Instruct"
     else:
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.category}_test_test_subset"
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.category}_test_subset"
 
     LOG.info("Loading model from %s", model_path)
     start_time = time.time()

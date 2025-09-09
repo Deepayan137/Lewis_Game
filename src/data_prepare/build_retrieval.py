@@ -250,7 +250,8 @@ def main():
     catalog_path = os.path.join(args.root, args.catalog_file)
     with open(catalog_path, 'r') as f:
         data = json.load(f)
-    categories = data.keys()
+    category = args.category
+    os.makedirs(os.path.join(args.out_dir, category, f'seed_{seed}'), exist_ok=True)
     all_data = []
     # for category in categories:
     #     if category in ['clothe']:
@@ -278,7 +279,7 @@ def main():
                 'label':batch['target_index'],
                 'category':batch['category'],
             })
-    os.makedirs(os.path.join(args.out_dir, category, f'seed_{seed}'), exist_ok=True)
+    
     K = args.distractors + 1
     category_json_path = os.path.join(args.out_dir, category, f'seed_{seed}', f'retrieval_top{K}.json')
     with open(category_json_path, 'w') as f:
