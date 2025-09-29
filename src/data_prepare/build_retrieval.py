@@ -33,6 +33,7 @@ class HierarchicalClipRetriever():
         device = "cuda", 
         vis_feat_extractor='clip',
         catalog_file="train_catalog_seed_42.json",
+        split="train",
         dir_names=None,
         clip_model_name: str = DEFAULT_CLIP_MODEL):
         
@@ -40,6 +41,7 @@ class HierarchicalClipRetriever():
         self.batch_size = batch_size
         self.data_dir = data_dir
         self.out_dir = out_dir
+        self.split = split
         self.vis_feat_extractor = vis_feat_extractor
         self.clip_model_name = clip_model_name
         self.clip_model = CLIPModel.from_pretrained(self.clip_model_name).to(self.device)
@@ -69,7 +71,7 @@ class HierarchicalClipRetriever():
         class_id = 0
         image_id = 0
         for dir_name in tqdm(dir_names, desc="Processing classes"):
-            filepaths = data[category][dir_name]['test']
+            filepaths = data[category][dir_name][self.split]
             self.class_id2name[class_id] = dir_name
             image_features_list = []
             
@@ -120,7 +122,7 @@ class HierarchicalClipRetriever():
         self.class_index = faiss.read_index(f"{self.out_dir}/{category}/seed_{seed}/class_means.faiss")
         self.image_index = faiss.read_index(f"{self.out_dir}/{category}/seed_{seed}/individual_images.faiss")
         
-        with open(f'{self.out_dir}/{category}/class_mappings.json', 'r') as f:
+        with open(f'{self.out_dir}/{category}//seed_{seed}/class_mappings.json', 'r') as f:
             mappings = json.load(f)
             self.class_id2name = {int(k): v for k, v in mappings['class_id2name'].items()}
             self.image_id2info = {int(k): v for k, v in mappings['image_id2info'].items()}
@@ -134,18 +136,21 @@ class HierarchicalClipRetriever():
         image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
         return image_features.detach().cpu().numpy()
 
-    def get_alternate_query(self, query_image_path, remaining_paths, alpha=0.6, beta=0.8):
+    def get_alternate_query(self, query_image_path, remaining_paths, alpha=0.6, beta=0.8, random_negative=False):
         # Extract query features
-        query_features = self.get_image_features(query_image_path)  # (1, d)
-        if query_features.ndim == 1:
-            query_features = query_features[np.newaxis, :]  # ensure (1, d)
-        remaining_features = [self.get_image_features(item) for item in remaining_paths]
-        remaining_features = np.vstack(remaining_features)  # (N, d)
-        similarity = 1 - cdist(query_features, remaining_features, 'cosine')  # (1, N)
-        similarity = similarity.flatten()
-        sorted_idx = np.argsort(similarity)
-        median_idx = sorted_idx[0]
-        return remaining_paths[median_idx]
+        if random_negative:
+            return random.choice(remaining_paths)
+        else:    
+            query_features = self.get_image_features(query_image_path)  # (1, d)
+            if query_features.ndim == 1:
+                query_features = query_features[np.newaxis, :]  # ensure (1, d)
+            remaining_features = [self.get_image_features(item) for item in remaining_paths]
+            remaining_features = np.vstack(remaining_features)  # (N, d)
+            similarity = 1 - cdist(query_features, remaining_features, 'cosine')  # (1, N)
+            similarity = similarity.flatten()
+            sorted_idx = np.argsort(similarity)
+            median_idx = sorted_idx[0]
+            return remaining_paths[median_idx]
     
     def hierarchical_distractor_sampling(self, query_image_path, num_distractors=4, 
                                        candidate_classes=8, selection_strategy='most_similar'):
@@ -214,14 +219,14 @@ class HierarchicalClipRetriever():
                 return part
         return None
     
-    def create_training_batch(self, query_image_path, remaining_paths, category, num_distractors=4):
+    def create_training_batch(self, query_image_path, remaining_paths, category, num_distractors=4, random_negative=False):
         """
         Create a complete training batch for Lewis game
         Returns query path, distractor paths, and target index (always 0)
         """
         distractors = self.hierarchical_distractor_sampling(query_image_path, num_distractors)
         try:
-            new_query_image_path = self.get_alternate_query(query_image_path, remaining_paths)
+            new_query_image_path = self.get_alternate_query(query_image_path, remaining_paths, random_negative=random_negative)
         except Exception as e:
             print(f"Problem at query: {query_image_path}")
             new_query_image_path = query_image_path
@@ -242,11 +247,15 @@ def main():
     parser = argparse.ArgumentParser(description="Create training batches for Lewis game")
     parser.add_argument('--root', type=str, default="manifests/PerVA")
     parser.add_argument('--category', type=str, default="clothe")
+    parser.add_argument('--split', type=str, default="train")
     parser.add_argument('--catalog_file', type=str, default="train_catalog_seed_23.json")
     parser.add_argument('--distractors', type=int, default=4)
+    parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--out_dir', type=str, default='outputs/PerVA', help='Optional output directory (defaults to --root)')
+    parser.add_argument('--random_negative', action='store_true', default=False, help='Use random negative sampling (default: False)')
     args = parser.parse_args()
-    seed = int(args.catalog_file.split('_')[-1].split('.')[0])
+    # seed = int(args.catalog_file.split('_')[-1].split('.')[0])
+    seed = args.seed
     catalog_path = os.path.join(args.root, args.catalog_file)
     with open(catalog_path, 'r') as f:
         data = json.load(f)
@@ -260,6 +269,7 @@ def main():
         data_dir=args.root,
         out_dir=args.out_dir,
         catalog_file=args.catalog_file,
+        split=args.split,
         dir_names=concepts)
     out_path = f'{args.out_dir}/{category}/seed_{seed}/'
     if not os.path.exists(os.path.join(out_path, 'class_mappings.json')):
@@ -270,9 +280,9 @@ def main():
         retriever._load_hierarchical_index(category, seed)
     concept_list = []
     for concept in tqdm(concepts):
-        for image_path in data[category][concept]['test']:
-            remaining_paths = [item for item in data[category][concept]['test'] if item != image_path]
-            batch = retriever.create_training_batch(image_path, remaining_paths, category, num_distractors=args.distractors)
+        for image_path in data[category][concept][args.split]:
+            remaining_paths = [item for item in data[category][concept][args.split] if item != image_path]
+            batch = retriever.create_training_batch(image_path, remaining_paths, category, num_distractors=args.distractors, random_negative=args.random_negative)
             concept_list.append({
                 "query_path":batch['query_path'],
                 "ret_paths":batch['image_paths'],
@@ -281,7 +291,8 @@ def main():
             })
     
     K = args.distractors + 1
-    category_json_path = os.path.join(args.out_dir, category, f'seed_{seed}', f'retrieval_top{K}.json')
+    save_file = f'retrieval_top{K}_random.json' if args.random_negative else f'retrieval_top{K}.json'
+    category_json_path = os.path.join(args.out_dir, category, f'seed_{seed}', save_file)
     with open(category_json_path, 'w') as f:
         json.dump(concept_list, f, indent=2)
     print(f"{category} data saved at {category_json_path}")

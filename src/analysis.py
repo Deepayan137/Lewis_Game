@@ -16,7 +16,7 @@ class PredictionAnalyzer:
         
     def setup_directories(self):
         """Create necessary output directories"""
-        for case in ['case1', 'case2']:
+        for case in ['ftr', 'ogr']:
             os.makedirs(f"{self.output_dir}/{case}/images", exist_ok=True)
             os.makedirs(f"{self.output_dir}/{case}/json", exist_ok=True)
     
@@ -167,12 +167,12 @@ class PredictionAnalyzer:
         
         # Analyze both cases
         if case1_items:
-            self.analyze_case(case1_items, 'case1', 'finetuned correct, original wrong')
+            self.analyze_case(case1_items, 'ftr', 'finetuned correct, original wrong')
         else:
             print("No Case 1 items found.")
             
         if case2_items:
-            self.analyze_case(case2_items, 'case2', 'original correct, finetuned wrong')
+            self.analyze_case(case2_items, 'ogr', 'original correct, finetuned wrong')
         else:
             print("No Case 2 items found.")
         
@@ -184,8 +184,8 @@ class PredictionAnalyzer:
 if __name__ == "__main__":
     # Initialize analyzer
     analyzer = PredictionAnalyzer(
-        original_json_path="results/PerVA/clothe/results_original.json",
-        finetuned_json_path="results/PerVA/clothe/results_finetune.json",
+        original_json_path="results/PerVA/bag/results_original.json",
+        finetuned_json_path="results/PerVA/bag/results_finetuned.json",
         output_dir="analysis2"
     )
     

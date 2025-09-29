@@ -9,6 +9,9 @@ except Exception:
     DataLoader = None
 import logging
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
+import sys
+sys.path.insert(0, 'src/')
+from defined import yollava_reverse_category_dict, myvlm_reverse_category_dict
 
 class DictListDataset(Dataset):
     """Wrap a list of dicts into a torch Dataset."""
@@ -31,7 +34,7 @@ class SimpleImageDataset(Dataset):
     """
     Simple dataset that returns PIL images based on index
     """
-    def __init__(self, category, json_path=None, split='train', seed=42):
+    def __init__(self, category, json_path=None, split='train', seed=42, data_name="PerVA"):
         """
         Initialize the dataset
         
@@ -43,6 +46,7 @@ class SimpleImageDataset(Dataset):
         self.category = category
         self.split = split
         self.json_path = json_path
+        self.data_name = data_name
         random.seed(seed)
         self.image_paths = self._load_image_paths()
         logging.info(f"Dataset initialized with {len(self.image_paths)} images from category '{category}' ({split} split)")
@@ -86,10 +90,16 @@ class SimpleImageDataset(Dataset):
         name = image_path.split('/')[-2]
         with Image.open(image_path) as _img:
             image = _img.convert("RGB")
-        category = self.category
+        if self.data_name == "YoLLaVA":
+            category = yollava_reverse_category_dict[name]
+        elif self.data_name == "MyVLM":
+            category = myvlm_reverse_category_dict[name]
+        else:
+            category = self.category
         problem = (
             f'Describe the {category} in the image so that it can be distinguished from other {category} objects. '
             "Do NOT mention background, location or state of the object. "
+            "If the image contains a person, avoid mentioning the clothing or accesories."
             f'Write exactly one fluent sentence that begins with "The {category}" and highlights 3–4 visible distinguishing attributes. '
             "Keep the description concise and natural, without using lists or brackets. "
             "Output the thinking process in <think> </think> and the personalized caption in <answer> </answer> tags."
@@ -120,7 +130,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Optimized Lewis Game Evaluation')
     parser.add_argument("--data_name", type=str, default='PerVA',
                        help='name of the dataset')
-    parser.add_argument("--catalog_file", type=str, default="train_catalog_seed_23.json",
+    parser.add_argument("--catalog_file", type=str, default="main_catalog.json",
                        help="Path to the catalog JSON file")
     parser.add_argument("--category", type=str, default='clothe',
                        help='Model type: original or finetuned')
@@ -132,7 +142,8 @@ if __name__ == "__main__":
         json_path=os.path.join(f'manifests/{args.data_name}', args.catalog_file),
         category=args.category,
         split="train",
-        seed=args.seed
+        seed=args.seed,
+        data_name=args.data_name
     )
 
     data_loader = create_data_loader(dataset, batch_size=4, shuffle=False)

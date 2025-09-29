@@ -5,7 +5,9 @@ from pathlib import Path
 from datasets import Dataset, DatasetDict
 from tqdm.auto import tqdm
 from PIL import Image
-
+import sys
+sys.path.insert(0, 'src/')
+from defined import yollava_reverse_category_dict, myvlm_reverse_category_dict
 # fixed base save directory per your request
 BASE_SAVE_DIR = "/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_data"
 
@@ -19,7 +21,7 @@ def _resolve_path(root: str, p: str) -> str:
     return os.path.join(root, p)
 
 
-def json_to_dataset_dict(ret_json, root, category, seed):
+def json_to_dataset_dict(ret_json, root, category, seed, dataset):
     retrieval_json_path = os.path.join(root, category, f'seed_{seed}', ret_json)
     with open(retrieval_json_path, "r") as f:
         data = json.load(f)
@@ -41,10 +43,17 @@ def json_to_dataset_dict(ret_json, root, category, seed):
             print(f"Warning: query image not found: {query_abs}")
 
         # speaker problem prompt (kept similar to your original)
-        category = item.get("category", "object")
+        concept_name = query_path_raw.split('/')[-2]
+        if dataset == 'YoLLaVA':
+            category = yollava_reverse_category_dict[concept_name]
+        elif dataset == "MyVLM":
+            category = myvlm_reverse_category_dict[concept_name]
+        else:
+            category = item.get("category", "object")
         speaker_problem = (
             f'Describe the {category} in the image so that it can be distinguished from other {category} objects. '
             "Do NOT mention background, location or state of the object. "
+            "If the image contains a person, avoid mentioning the clothing or accesories."
             f'Write exactly one fluent sentence that begins with "The {category}" and highlights 3–4 visible distinguishing attributes. '
             "Keep the description concise and natural, without using lists or brackets. "
             "Output the thinking process in <think> </think> and the personalized caption in <answer> </answer> tags."
@@ -101,7 +110,8 @@ def save_dataset_dict(ds_dict: DatasetDict, save_dirname: str):
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Convert retrieval JSON to HF Dataset and save to disk.")
-    ap.add_argument("--root", default="outputs/PerVA")
+    ap.add_argument("--root", default="outputs")
+    ap.add_argument("--dataset", default="YoLLaVA")
     ap.add_argument("--category", default="clothe")
     ap.add_argument("--ret_json", default="retrieval_top5.json")
     ap.add_argument("--seed", type=int, default=23, help="Random seed for reproducibility.")
@@ -111,10 +121,11 @@ def parse_args():
 
 def main():
     args = parse_args()
-    ds = json_to_dataset_dict(args.ret_json, args.root, args.category, args.seed)
+    root = os.path.join(args.root, args.dataset)
+    ds = json_to_dataset_dict(args.ret_json, root, args.category, args.seed, args.dataset)
     # optionally you could include args.dataset into the save_dirname if that helps naming consistency
     print_dataset_statistics(ds)
-    save_dirname = f"PerVA_{args.category}_test_subset"
+    save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}"
     out = save_dataset_dict(ds, save_dirname)
     print(f"Dataset saved in: {save_dirname}")
     # quick sanity check load

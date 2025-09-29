@@ -14,7 +14,7 @@ def is_image_file(p: Path) -> bool:
 def gather_images(folder: Path, relative_to: Path = None) -> List[str]:
     imgs = sorted([p for p in folder.iterdir() if is_image_file(p)])
     if relative_to:
-        return [str(p.relative_to(relative_to)) for p in imgs]
+        return [str(p.resolve()) for p in imgs]
     return [str(p) for p in imgs]
 
 
@@ -38,6 +38,7 @@ def build_catalog_from_explicit_splits(data_root: Path, train_dirname: str, test
         catalog[cat] = {}
         train_cat_dir = train_dir / cat
         test_cat_dir = test_dir / cat
+        # import pdb;pdb.set_trace()
         # unify set of concepts under category
         concepts = set()
         if train_cat_dir.exists():
@@ -66,7 +67,6 @@ def build_catalog_by_splitting(data_root: Path, relative: bool, train_fraction: 
     random.seed(seed)
     catalog = {}
     base = data_root if relative else None
-
     # categories are immediate subdirectories of data_root
     for cat_path in sorted([p for p in data_root.iterdir() if p.is_dir()]):
         # skip folders that are obviously the explicit split folders
@@ -113,11 +113,11 @@ def parse_args():
                    help="Store image paths relative to --data-root (recommended).")
     p.add_argument("--train-fraction", type=float, default=0.2,
                    help="Fraction of images per concept to use for train when splitting (default 0.2).")
-    p.add_argument("--num-train", type=int, default=None,
+    p.add_argument("--num_train", type=int, default=None,
                    help="If set, use exact number of images per concept for train (overrides fraction).")
     p.add_argument("--seed", type=int, default=42, help="Random seed for deterministic splits.")
-    p.add_argument("--train_dirname", type=str, default="train_", help="Name of train split folder (default 'train_').")
-    p.add_argument("--test_dirname", type=str, default="test_", help="Name of test split folder (default 'test_').")
+    p.add_argument("--train_dirname", type=str, default="train", help="Name of train split folder (default 'train_').")
+    p.add_argument("--test_dirname", type=str, default="test", help="Name of test split folder (default 'test_').")
     return p.parse_args()
 
 
