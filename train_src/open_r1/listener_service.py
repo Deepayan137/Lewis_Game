@@ -31,9 +31,9 @@ LISTENER_BATCH_SIZE = int(os.environ.get("LISTENER_BATCH_SIZE", "5"))  # per-mod
 
 _infer_semaphore = threading.Semaphore(INFERENCE_CONCURRENCY)
 
-# ---- Request / Response schemas ----
+
 class ScoreRequest(BaseModel):
-    candidate_paths: List[str]   # List of file paths accessible to this machine
+    candidate_paths: List[str]
     question: str
     topk: int = 1
 
@@ -114,7 +114,6 @@ class ListenerService:
 
         text_list = [ self.processor.apply_chat_template([m], tokenize=False, add_generation_prompt=True)
                      for m in messages ]
-        print(f'[TEXT LIST]->{text_list}')
         image_inputs, video_inputs = process_vision_info(messages)
         inputs = self.processor(
             text=text_list,
@@ -143,10 +142,6 @@ class ListenerService:
             return_dict_in_generate=True,
             output_scores=True,
         )
-        # explicitly set sync flags off if present in this transformers version
-        # for flag in ("synced_gpus", "synchronized_gpus", "sync_gpus"):
-        #     gen_kwargs[flag] = False
-
         self.model.eval()
         try:
             with torch.inference_mode():
@@ -178,7 +173,7 @@ class ListenerService:
             pass
 
         return outputs
-
+        
     def score_candidates(self, candidate_paths: List[str], question: str, max_new_tokens=10, batch_size: int = 8):
         """
         Score a list of candidate_paths. Returns yes_probabilities list aligned with candidate_paths.
@@ -189,43 +184,18 @@ class ListenerService:
 
         for i in range(0, len(prepared), batch_size):
             chunk = prepared[i:i+batch_size]
-            
-            # try:
             inputs = self._build_messages_and_inputs(chunk, question)
-            # except Exception as e:
-            #     print(f"[LISTENER ERROR] _build_messages_and_inputs failed for chunk {i}:{i+len(chunk)}: {e}")
-            #     yes_probs.extend([0.0] * len(chunk))
-            #     continue
-
-            # try:
             gen_out = self._generate_with_confidence(inputs, max_new_tokens=max_new_tokens)
-            # except Exception as e:
-            #     print(f"[LISTENER ERROR] _generate_with_confidence failed for chunk {i}:{i+len(chunk)}: {e}")
-            #     yes_probs.extend([0.0] * len(chunk))
-            #     try:
-            #         del inputs
-            #     except Exception:
-            #         pass
-            #     gc.collect()
-            #     torch.cuda.empty_cache()
-            #     continue
             seqs = getattr(gen_out, "sequences", None)
             if seqs is not None:
                 try:
                     seqs_cpu = seqs.detach().cpu()
                 except Exception:
-                    # if detach/cpu fails, fallback to original object (but try to continue)
                     seqs_cpu = seqs
             else:
                 seqs_cpu = None
-            # Prefer using 'scores' if present
-            # Move first-token logits to CPU if scores are present
             scores_list = getattr(gen_out, "scores", None)
-            # Prefer using 'scores' if present
-            # if scores_list:
-                # try:
             first_logits = scores_list[0]  # (batch, vocab)
-            # detach and move to CPU in fp32 (cheap in RAM relative to keeping on GPU)
             fl_cpu = first_logits.detach().cpu().to(dtype=torch.float32)
             vocab_size = fl_cpu.shape[-1]
             yid = self.yes_token_id
@@ -246,26 +216,6 @@ class ListenerService:
                 no_logps = logp[:, nid]
                 yes_vs_no = torch.softmax(torch.stack([yes_logps, no_logps], dim=1), dim=1)[:, 0].tolist()
                 yes_probs.extend([float(x) for x in yes_vs_no])
-
-                # except Exception as e:
-                #     print(f"[LISTENER ERROR] processing scores failed: {e}")
-                #     # fallback decode path using CPU sequences
-                #     if seqs_cpu is None:
-                #         yes_probs.extend([0.0] * len(chunk))
-                #     else:
-                #         decoded = self.processor.batch_decode(seqs_cpu, skip_special_tokens=True)
-                #         for txt in decoded:
-                #             yes_probs.append(1.0 if txt.strip().lower().startswith("yes") else 0.0)
-            # else:
-            #     # fallback: decode sequences (we already moved seqs to CPU above)
-            #     if seqs_cpu is None:
-            #         yes_probs.extend([0.0] * len(chunk))
-            #     else:
-            #         decoded = self.processor.batch_decode(seqs_cpu, skip_special_tokens=True)
-            #         for txt in decoded:
-            #             yes_probs.append(1.0 if txt.strip().lower().startswith("yes") else 0.0)
-
-            # --- CRITICAL CLEANUP: remove big GPU refs now that we've moved/used them ---
             try:
                 # remove references that may hold GPU memory (gen_out carries scores/sequences)
                 del gen_out
@@ -310,6 +260,8 @@ def startup():
     listener = ListenerService(model_name=args.model_name, use_8bit=args.use_8bit, device=args.device)
     print("[listener_service] ready.")
 
+
+    
 @app.post("/score")
 def score(req: ScoreRequest):
     start = time.time()

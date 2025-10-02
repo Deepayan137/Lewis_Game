@@ -20,6 +20,7 @@ from typing import Any, Callable, Optional, Union
 import torch
 import torch.utils.data
 import torch.nn.functional as F
+import torch.distributed as dist
 import transformers
 from datasets import Dataset, IterableDataset
 from packaging import version
@@ -46,7 +47,10 @@ from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_c
 from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_for_generation
 from trl.trainer.grpo_config import GRPOConfig
 from trl.trainer.utils import generate_model_card, get_comet_experiment_url
-
+import sys
+sys.path.insert(0, 'src/virft/src/')
+# from open_r1.dist_helpers import *
+from open_r1.trainer.speaker_helpers import aggregate_speaker_requests, modify_prompt
 import copy
 
 
@@ -147,26 +151,27 @@ class Qwen2VLGRPOTrainer(Trainer):
 
     def __init__(
         self,
-        model: Union[str, PreTrainedModel],
-        reward_funcs: Union[RewardFunc, list[RewardFunc]],
-        args: GRPOConfig = None,
-        train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
-        eval_dataset: Optional[Union[Dataset, IterableDataset, dict[str, Union[Dataset, IterableDataset]]]] = None,
-        processing_class: Optional[PreTrainedTokenizerBase] = None,
-        reward_processing_classes: Optional[Union[PreTrainedTokenizerBase, list[PreTrainedTokenizerBase]]] = None,
-        callbacks: Optional[list[TrainerCallback]] = None,
-        optimizers: tuple[Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]] = (None, None),
-        peft_config: Optional["PeftConfig"] = None,
-        max_pixels: Optional[int] = 12845056,
-        min_pixels: Optional[int] = 3136,
-        attn_implementation: str = "flash_attention_2",
+            model: Union[str, PreTrainedModel],
+            reward_funcs: Union[RewardFunc, list[RewardFunc]],
+            args: GRPOConfig = None,
+            train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
+            eval_dataset: Optional[Union[Dataset, IterableDataset, dict[str, Union[Dataset, IterableDataset]]]] = None,
+            processing_class: Optional[PreTrainedTokenizerBase] = None,
+            reward_processing_classes: Optional[Union[PreTrainedTokenizerBase, list[PreTrainedTokenizerBase]]] = None,
+            callbacks: Optional[list[TrainerCallback]] = None,
+            optimizers: tuple[Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]] = (None, None),
+            peft_config: Optional["PeftConfig"] = None,
+            max_pixels: Optional[int] = 12845056,
+            min_pixels: Optional[int] = 3136,
+            attn_implementation: str = "flash_attention_2",
+            train_listener=False
     ):
         # Args
         if args is None:
             model_name = model if isinstance(model, str) else model.config._name_or_path
             model_name = model_name.split("/")[-1]
             args = GRPOConfig(f"{model_name}-GRPO")
-
+        self.train_listener=train_listener
         # Models
         # Trained model
         model_init_kwargs = args.model_init_kwargs or {}
@@ -208,24 +213,6 @@ class Qwen2VLGRPOTrainer(Trainer):
                 )
         if peft_config is not None:
             model = get_peft_model(model, peft_config)
-        # # Reference model
-        # if is_deepspeed_zero3_enabled():
-        #     if "Qwen2-VL" in model_id:
-        #         self.ref_model = Qwen2VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
-        #     elif "Qwen2.5-VL" in model_id:
-        #         self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
-        #     elif "Aria" in model_id:
-        #         self.ref_model = AriaForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
-        #     else:
-        #         self.ref_model = AutoModelForCausalLM.from_pretrained(model_id, **model_init_kwargs)
-        # elif peft_config is None:
-        #     # If PEFT configuration is not provided, create a reference model based on the initial model.
-        #     self.ref_model = create_reference_model(model)
-        # else:
-        #     # If PEFT is used, the reference model is not needed since the adapter can be disabled
-        #     # to revert to the initial model.
-        #     self.ref_model = None
-
         # Reference model lzy modified
         if peft_config is None:
             if is_deepspeed_zero3_enabled():
@@ -309,18 +296,11 @@ class Qwen2VLGRPOTrainer(Trainer):
             pad_token_id=pad_token_id,
         )
         self.beta = args.beta
-
-        # The trainer estimates the number of FLOPs (floating-point operations) using the number of elements in the
-        # input tensor associated with the key "input_ids". However, in GRPO, the sampled data does not include the
-        # "input_ids" key. Instead, the available keys is "prompt". As a result, the trainer issues the warning:
-        # "Could not estimate the number of tokens of the input, floating-point operations will not be computed." To
-        # suppress this warning, we set the "estimate_tokens" key in the model's "warnings_issued" dictionary to True.
-        # This acts as a flag to indicate that the warning has already been issued.
         model.warnings_issued["estimate_tokens"] = True
 
         # Initialize the metrics
         self._metrics = defaultdict(list)
-
+        
         super().__init__(
             model=model,
             args=args,
@@ -346,7 +326,6 @@ class Qwen2VLGRPOTrainer(Trainer):
         for i, reward_func in enumerate(self.reward_funcs):
             if isinstance(reward_func, PreTrainedModel):
                 self.reward_funcs[i] = self.accelerator.prepare_model(reward_func, evaluation_mode=True)
-
     def _set_signature_columns_if_needed(self):
         # If `self.args.remove_unused_columns` is True, non-signature columns are removed.
         # By default, this method sets `self._signature_columns` to the model's expected inputs.
@@ -374,33 +353,15 @@ class Qwen2VLGRPOTrainer(Trainer):
         if return_outputs:
             raise ValueError("The GRPOTrainer does not support returning outputs")
         
-        # print(f"[DEBUG] GPU Rank: {torch.distributed.get_rank() if torch.distributed.is_initialized() else 'single'}")
-        # print(f"[DEBUG] Number of input samples: {len(inputs)}")
-        # print(f"[DEBUG] num_items_in_batch: {num_items_in_batch}")
-        
-        # # Check each sample's structure
-        # for i, sample in enumerate(inputs):
-        #     print(f"[DEBUG] Sample {i} keys: {list(sample.keys())}")
-        #     has_grid = "grid_image" in sample
-        #     print(f"[DEBUG] Sample {i} has grid_image: {has_grid}")
-        #     if has_grid:
-        #         print(f"[DEBUG] Sample {i} has 2 images (image + grid_image)")
-        #     else:
-        #         print(f"[DEBUG] Sample {i} has 1 image")
-        
-        # Count total images
-        # total_images = 0
-        # for sample in inputs:
-        #     if "grid_image" in sample:
-        #         total_images += 2
-        #     else:
-        #         total_images += 1
-        
-        # print(f"[DEBUG] Total images expected: {total_images}")
-
+        if self.train_listener:
+            desc = aggregate_speaker_requests(inputs)
+            # rank = dist.get_rank() if dist.is_initialized() else 0
+            # print(f"[Rank {rank}] Aggregate speaker outputs ({len(desc)} items):")
+            # for i, d in enumerate(desc):
+            #     print(f"  - Example {i}: {d}")
+            inputs = modify_prompt(inputs, desc)
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
-        # Collect all images from all samples
         all_images = []
         ret_images = []
         for sample in inputs:
@@ -424,10 +385,6 @@ class Qwen2VLGRPOTrainer(Trainer):
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
         pixel_values = prompt_inputs["pixel_values"]
         image_grid_thw = prompt_inputs["image_grid_thw"]
-        # print(f"input_ids shape: {prompt_ids.shape}")
-        # print(f"attention_mask shape: {prompt_mask.shape}")
-        # print(f"pixel_values shape: {pixel_values.shape}")
-        # print(f"image_grid_thw shape: {image_grid_thw.shape}")
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]

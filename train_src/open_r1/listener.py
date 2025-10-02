@@ -92,17 +92,7 @@ class Listener:
             return_tensors="pt",
         )
         inputs = inputs.to(self.model.device)
-        
-        # Generate with confidence scores if requested
-        # with torch.no_grad():
         if return_confidence:
-            # outputs = self.model.generate(
-            #     **inputs,
-            #     max_new_tokens=10,
-            #     do_sample=False,
-            #     return_dict_in_generate=True,
-            #     output_scores=True
-            # )
             outputs = listener_generate_safe(
                 self.model,
                 **inputs,
@@ -110,12 +100,8 @@ class Listener:
                 do_sample=False,
                 return_dict_in_generate=True,
                 output_scores=True
-                 # input_ids, attention_mask, pixel_values, etc.
             )
-            # import pdb;pdb.set_trace()
             generated_ids = outputs.sequences
-            
-            # Extract confidence from first token
             confidence_score = None
             yes_prob = None
             no_prob = None
@@ -237,3 +223,15 @@ if __name__ == "__main__":
     listener = Listener()
     out = listener.listener_process_multiple_images_batched(images, question, return_confidence=True, for_contrastive_loss=True, batch_size=5)
     print(out)
+    prompt = """
+    You are a helpful AI agent specializing in image analysis and object recognition. 
+    Your task is to analyze a query image and compare it with three provided descriptions.
+    Below are the description(s): Your Task:
+    - Compare the query image with each description and answer the following question:
+    - **Ignore superficial details** such as clothing, accessories, pose variations, or surrounding elements (e.g., people in the background). Focus only on non-variant/permanent features such as color, shape, pattern, text for objects/buildings and facial features for people.
+    - List shared attributes between the image and each description very concisely (at max 5 words).
+    - Provide a brief reasoning for your final answer.
+    - Respond strictly in the following JSON format:
+    {json.dumps(answer_format, indent=2)}
+    Any deviation from this format will be considered incorrect. Do not output any additional text.
+    """
