@@ -36,7 +36,7 @@ def json_to_dataset_dict(ret_json, root, category, seed, dataset):
         query_abs = _resolve_path('/gpfs/projects/ehpc171/ddas/projects/Lewis_Game', query_path_raw)
         # make retrieved absolute where possible
         retrieved_abs = [_resolve_path('/gpfs/projects/ehpc171/ddas/projects/Lewis_Game', rp) for rp in ret_list]
-
+        names = [Path(p).parent.name for p in retrieved_abs]
         # simple validation: warn if query path missing
         if not os.path.exists(query_abs):
             # keep entry, but warn
@@ -64,6 +64,7 @@ def json_to_dataset_dict(ret_json, root, category, seed, dataset):
         rows.append({
             "image": Image.open(query_abs).convert('RGB'),
             "ret_paths": retrieved_abs,
+            "names":names,
             "speaker_problem": speaker_problem,
             "solution": item.get("label"),
             "category": category,
@@ -112,7 +113,7 @@ def parse_args():
     ap = argparse.ArgumentParser(description="Convert retrieval JSON to HF Dataset and save to disk.")
     ap.add_argument("--root", default="outputs")
     ap.add_argument("--dataset", default="YoLLaVA")
-    ap.add_argument("--category", default="clothe")
+    ap.add_argument("--category", default="all")
     ap.add_argument("--ret_json", default="retrieval_top5.json")
     ap.add_argument("--seed", type=int, default=23, help="Random seed for reproducibility.")
     
