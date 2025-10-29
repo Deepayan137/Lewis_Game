@@ -69,7 +69,7 @@ def main():
     parser.add_argument('--seed', type=int, default=64, help='Random seed for shuffling')
     parser.add_argument('--train-fraction', type=float, default=0.10,
                         help='Fraction of concepts per category to use for training (default 0.20)')
-    parser.add_argument('--num-train', type=int, default=None,
+    parser.add_argument('--num_train', type=int, default=None,
                         help='If set, override fraction and use this many train concepts per category (min 1)')
     parser.add_argument('--out_dir', type=str, default=None,
                         help='Optional output directory (defaults to --root)')

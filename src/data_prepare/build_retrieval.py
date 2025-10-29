@@ -35,7 +35,7 @@ class HierarchicalClipRetriever():
         catalog_file="train_catalog_seed_42.json",
         split="train",
         dir_names=None,
-        clip_model_name: str = DEFAULT_CLIP_MODEL):
+        clip_model_name: str = DEFAULT_CLIP_MODEL, with_negative=False):
         
         self.device = device
         self.batch_size = batch_size
@@ -50,7 +50,7 @@ class HierarchicalClipRetriever():
         self.catalog_path = os.path.join(data_dir, catalog_file)
         self.class_index = faiss.IndexFlatIP(embed_dim)  # Class mean embeddings
         self.image_index = faiss.IndexFlatIP(embed_dim)  # Individual image embeddings
-        
+        self.with_negative = with_negative
         # if create_index:
         #     self._create_hierarchical_index()
         # else:
@@ -71,7 +71,11 @@ class HierarchicalClipRetriever():
         class_id = 0
         image_id = 0
         for dir_name in tqdm(dir_names, desc="Processing classes"):
-            filepaths = data[category][dir_name][self.split]
+            if self.with_negative:
+                filepaths = data[category][dir_name]['negative']
+            else:
+                filepaths = data[category][dir_name][self.split]
+            # filepaths = random.sample(filepaths, 10)
             self.class_id2name[class_id] = dir_name
             image_features_list = []
             
@@ -104,11 +108,13 @@ class HierarchicalClipRetriever():
                 self.class_index.add(class_mean_features.numpy())
             
             class_id += 1
+        class_means_vdb = "class_means_with_neg.faiss" if self.with_negative else "class_means.faiss"
+        individual_images_vdb = "individual_images_with_neg.faiss" if self.with_negative else "individual_images.faiss"
+        class_mappings_json = "class_mappings_with_neg.json" if self.with_negative else "class_mappings.json" 
+        faiss.write_index(self.class_index, f"{self.out_dir}/{category}/seed_{seed}/{class_means_vdb}")
+        faiss.write_index(self.image_index, f"{self.out_dir}/{category}/seed_{seed}/{individual_images_vdb}")
         
-        faiss.write_index(self.class_index, f"{self.out_dir}/{category}/seed_{seed}/class_means.faiss")
-        faiss.write_index(self.image_index, f"{self.out_dir}/{category}/seed_{seed}/individual_images.faiss")
-        
-        with open(f'{self.out_dir}/{category}/seed_{seed}/class_mappings.json', 'w') as f:
+        with open(f'{self.out_dir}/{category}/seed_{seed}/{class_mappings_json}', 'w') as f:
             json.dump({
                 'class_id2name': self.class_id2name,
                 'image_id2info': self.image_id2info,
@@ -118,11 +124,13 @@ class HierarchicalClipRetriever():
     def _load_hierarchical_index(self, category, seed):
         """Load pre-built indices and mappings"""
         print(f"Loading hierarchical database from {self.out_dir}/seed_{seed}/{category}")
+        class_means_vdb = "class_means_with_neg.faiss" if self.with_negative else "class_means.faiss"
+        individual_images_vdb = "individual_images_with_neg.faiss" if self.with_negative else "individual_images.faiss"
+        class_mappings_json = "class_mappings_with_neg.json" if self.with_negative else "class_mappings.json"
+        self.class_index = faiss.read_index(f"{self.out_dir}/{category}/seed_{seed}/{class_means_vdb}")
+        self.image_index = faiss.read_index(f"{self.out_dir}/{category}/seed_{seed}/{individual_images_vdb}")
         
-        self.class_index = faiss.read_index(f"{self.out_dir}/{category}/seed_{seed}/class_means.faiss")
-        self.image_index = faiss.read_index(f"{self.out_dir}/{category}/seed_{seed}/individual_images.faiss")
-        
-        with open(f'{self.out_dir}/{category}//seed_{seed}/class_mappings.json', 'r') as f:
+        with open(f'{self.out_dir}/{category}//seed_{seed}/{class_mappings_json}', 'r') as f:
             mappings = json.load(f)
             self.class_id2name = {int(k): v for k, v in mappings['class_id2name'].items()}
             self.image_id2info = {int(k): v for k, v in mappings['image_id2info'].items()}
@@ -151,6 +159,41 @@ class HierarchicalClipRetriever():
             sorted_idx = np.argsort(similarity)
             median_idx = sorted_idx[0]
             return remaining_paths[median_idx]
+    
+    def hierarchical_distractor_sampling_with_negatives(self, query_image_path, num_distractors=4, 
+                                       candidate_classes=8, selection_strategy='most_similar'):
+        query_features = self.get_image_features(query_image_path)
+        query_class_name = self._get_class_from_path(query_image_path)
+        distractor_candidates = []
+        image_ids_in_class = self.class_name2images[query_class_name]
+        
+        if selection_strategy == 'most_dissimilar':
+            image_id = self._find_most_dissimilar_in_class(
+                query_features, image_ids_in_class, k=num_distractors
+            )
+        elif selection_strategy == 'most_similar':
+            image_id, _ = self._find_most_dissimilar_in_class(
+                query_features, image_ids_in_class, k=num_distractors, reverse=True
+            )
+        elif selection_strategy == 'random':
+            image_id = random.sample(image_ids_in_class, num_distractors)
+        else:
+            if random.random() < 0.5:
+                image_id = self._find_most_dissimilar_in_class(
+                    query_features, image_ids_in_class, k=num_distractors
+                )
+            else:
+                image_id = random.sample(image_ids_in_class, num_distractors)
+        
+        for item in image_id:
+
+            distractor_candidates.append({
+                'image_id': item,
+                'image_path': self.image_id2info[item]['path'],
+                'class_name': query_class_name,
+            })
+        selected_distractors = distractor_candidates
+        return selected_distractors
     
     def hierarchical_distractor_sampling(self, query_image_path, num_distractors=4, 
                                        candidate_classes=8, selection_strategy='most_similar'):
@@ -198,6 +241,28 @@ class HierarchicalClipRetriever():
         selected_distractors = distractor_candidates[:num_distractors]
         return selected_distractors
     
+    def _find_most_dissimilar_in_class(self, query_features, image_ids_in_class, k=4, reverse=False):
+        """
+        Find the k most dissimilar (least similar) images within a specific class.
+
+        Args:
+            query_features: numpy array, (1, dim)
+            image_ids_in_class: list of image ids
+            k: number of most dissimilar images to return
+
+        Returns:
+            List of tuples: [(image_id, similarity), ...] sorted by increasing similarity (most dissimilar first)
+        """
+        similarities = []
+        for image_id in image_ids_in_class:
+            image_features = self.image_index.reconstruct(image_id).reshape(1, -1)
+            similarity = np.dot(query_features, image_features.T)[0, 0]
+            similarities.append((image_id, similarity))
+        # Sort by similarity (ascending, so least similar are first)
+        similarities.sort(key=lambda x: x[1], reverse=reverse)
+        worst_image_id = [item for item, _ in similarities]
+        return worst_image_id[:k]
+    
     def _find_most_similar_in_class(self, query_features, image_ids_in_class):
         """Find the most similar image within a specific class"""
         best_similarity = -1
@@ -224,7 +289,12 @@ class HierarchicalClipRetriever():
         Create a complete training batch for Lewis game
         Returns query path, distractor paths, and target index (always 0)
         """
-        distractors = self.hierarchical_distractor_sampling(query_image_path, num_distractors)
+        if self.with_negative:
+            selection_strategy = 'most_similar' if os.path.basename(self.data_dir) == 'PerVA' else 'random'
+            distractors = self.hierarchical_distractor_sampling_with_negatives(query_image_path, num_distractors, selection_strategy=selection_strategy)
+        else:
+            distractors = self.hierarchical_distractor_sampling(query_image_path, num_distractors)
+
         try:
             new_query_image_path = self.get_alternate_query(query_image_path, remaining_paths, random_negative=random_negative)
         except Exception as e:
@@ -253,6 +323,7 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--out_dir', type=str, default='outputs/PerVA', help='Optional output directory (defaults to --root)')
     parser.add_argument('--random_negative', action='store_true', default=False, help='Use random negative sampling (default: False)')
+    parser.add_argument('--with_negative', action='store_true', default=False, help='use negatives sourced from LAION')
     args = parser.parse_args()
     # seed = int(args.catalog_file.split('_')[-1].split('.')[0])
     seed = args.seed
@@ -265,14 +336,17 @@ def main():
     # for category in categories:
     #     if category in ['clothe']:
     concepts = data[category].keys()
+    with_negative = args.with_negative
     retriever = HierarchicalClipRetriever(
         data_dir=args.root,
         out_dir=args.out_dir,
         catalog_file=args.catalog_file,
         split=args.split,
-        dir_names=concepts)
+        dir_names=concepts,
+        with_negative=with_negative)
     out_path = f'{args.out_dir}/{category}/seed_{seed}/'
-    if not os.path.exists(os.path.join(out_path, 'class_mappings.json')):
+    class_mappings_json = "class_mappings_with_neg.json" if with_negative else "class_mappings.json"
+    if not os.path.exists(os.path.join(out_path, class_mappings_json)):
         print("Creating Index")
         retriever._create_hierarchical_index(category, seed)
     else:
@@ -291,7 +365,7 @@ def main():
             })
     
     K = args.distractors + 1
-    save_file = f'retrieval_top{K}_random.json' if args.random_negative else f'retrieval_top{K}.json'
+    save_file = f'retrieval_top{K}_with_negative.json' if with_negative else f'retrieval_top{K}.json'
     category_json_path = os.path.join(args.out_dir, category, f'seed_{seed}', save_file)
     with open(category_json_path, 'w') as f:
         json.dump(concept_list, f, indent=2)

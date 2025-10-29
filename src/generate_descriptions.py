@@ -30,7 +30,7 @@ from tqdm import tqdm
 # from inference_utils.model import setup_model, speaker_describes_batch
 from inference_utils.dataset import *
 from inference_utils.model import *
-from inference_utils.cleanup import extract_speaker_answer_term
+from inference_utils.cleanup import extract_speaker_answer_term, parse_descriptions
 from defined import yollava_reverse_category_dict, myvlm_reverse_category_dict
 LOG = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ def process_batch_efficiently(
     processor,
     batch_items: List[Dict[str, Any]],
     max_new_tokens: int = 128,
+    num_return_sequences: int = 1
 ) -> List[Tuple[str, str]]:
     """
     Efficiently describe a batch of items using the speaker model.
@@ -61,6 +62,7 @@ def process_batch_efficiently(
             images,
             problems,
             max_new_tokens=max_new_tokens,
+            num_return_sequences=num_return_sequences
         )
 
     # If single response returned, normalize to list
@@ -75,6 +77,7 @@ def run_description_generation(
     processor,
     data_loader: Iterable,
     max_new_tokens: int = 128,
+    num_return_sequences: int = 1,
     log_every: int = 5,
 ) -> List[Tuple[str, str]]:
     results: List[Tuple[str, str]] = []
@@ -88,6 +91,7 @@ def run_description_generation(
                 processor,
                 batch_items,
                 max_new_tokens=max_new_tokens,
+                num_return_sequences=num_return_sequences
             )
             results.extend(batch_results)
         except Exception:
@@ -118,13 +122,15 @@ def parse_args() -> argparse.Namespace:
                        help="Path to the catalog JSON file")
     parser.add_argument("--category", type=str, default='clothe',
                        help='Model category')
-    parser.add_argument("--model_type", type=str, default='original', choices=['original', 'original_7b', 'finetuned', 'finetuned_7b'],
+    parser.add_argument("--model_type", type=str, default='original', choices=['original_2b', 'original_7b', 'finetuned_2b', 'finetuned_7b', 'lora_finetuned_2b', 'lora_finetuned_7b', 'lora_finetuned_2b_with_neg', 'lora_finetuned_7b_with_neg'],
                        help='Model type: original or finetuned')
     parser.add_argument("--seed", type=int, default=42,
                        help='random seed')
     parser.add_argument("--batch_size", type=int, default=4,
                        help='Batch size for processing')
     parser.add_argument("--max_new_tokens", type=int, default=150,
+                       help='max tokens')
+    parser.add_argument("--num_return_sequences", type=int, default=1,
                        help='max tokens')
     parser.add_argument("--output_dir", type=str, default='outputs',
                        help='where to save outputs')
@@ -137,18 +143,28 @@ def main():
     LOG.info("Arguments: %s", args)
 
     # Choose model path
-    if args.model_type == 'original':
+    if args.model_type == 'original_2b':
         model_path = "Qwen/Qwen2-VL-2B-Instruct"
     elif args.model_type == 'original_7b':
         model_path = "Qwen/Qwen2-VL-7B-Instruct"
-    elif args.model_type == "finetuned":
+    elif args.model_type == "finetuned_2b":
         model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.data_name}_{args.category}_train_seed_{args.seed}"
     elif args.model_type == 'finetuned_7b':
         model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_{args.data_name}_{args.category}_train_seed_{args.seed}"
-
+    elif args.model_type == 'lora_finetuned_2b_with_neg':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_with_neg_SPEAKER_{args.data_name}_{args.category}_train_seed_{args.seed}"
+    elif args.model_type == 'lora_finetuned_7b_with_neg':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_with_neg_SPEAKER_{args.data_name}_{args.category}_train_seed_{args.seed}"
+    elif args.model_type == 'lora_finetuned_7b':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_{args.data_name}_{args.category}_train_seed_{args.seed}_lr"
+    elif args.model_type == 'lora_finetuned_2b':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_SPEAKER_{args.data_name}_{args.category}_train_seed_{args.seed}"
     LOG.info("Loading model from %s", model_path)
     start_time = time.time()
-    speaker_model, processor = setup_model(model_path)
+    use_peft = False
+    if args.model_type.startswith('lora_finetuned_7b'):
+        use_peft = True
+    speaker_model, processor = setup_model(model_path, use_peft=use_peft)
     LOG.info("Model loaded in %.1f s", time.time() - start_time)
 
     # Dataset + loader
@@ -168,6 +184,7 @@ def main():
         processor,
         data_loader,
         max_new_tokens=args.max_new_tokens,
+        num_return_sequences=args.num_return_sequences,
         log_every=5,
     )
 
@@ -183,18 +200,30 @@ def main():
             category = myvlm_reverse_category_dict[name]
         else:
             category = args.category
-        desc_clean = extract_speaker_answer_term(desc)
+        if args.num_return_sequences > 1:
+            desc_clean = {"coarse":[], "detailed":[]}
+            desc_clean["coarse"] = [parse_descriptions(d)["coarse"] for d in desc]
+            desc_clean["detailed"] = [parse_descriptions(d)["detailed"] for d in desc]
+        else:
+            desc_clean = parse_descriptions(desc[0])
+            for key in ("coarse", "detailed"):
+                if key == 'coarse':
+                    desc_clean['coarse'] = desc_clean["coarse"] if desc_clean["coarse"] else f"A photo of a {category}"
+                desc_clean[key] = [desc_clean[key]]
         result_dict[name] = {
             "name": name,
-            "distinguishing features": desc_clean
+            "category":category,
+            "general": desc_clean["coarse"],
+            "distinguishing features": desc_clean["detailed"],
         }
         response_dict["concept_dict"][f'<{name}>'] = {
             "name": name,
             "category":category,
             "image": str(Path(image_path).resolve()),
             "info": {
-                "general":desc_clean,
-                "category":category
+                "category":category,
+                "general": desc_clean["coarse"],
+                "distinct features":desc_clean["detailed"],
             }
         }
         response_dict["path_to_concept"][str(Path(image_path).resolve())]=f'<{name}>'

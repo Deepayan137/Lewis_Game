@@ -7,150 +7,138 @@ import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoModel, AutoTokenizer, AutoProcessor
 import logging
 
-def setup_model(model_name_or_path, device="cuda"):
+def setup_model(model_name_or_path, use_peft=False, device="cuda"):
     logging.info("Loading model...")
-    if model_name_or_path == "Qwen/Qwen3-8B":
-        processor = AutoTokenizer.from_pretrained(model_name_or_path)
-        model = AutoModelForCausalLM.from_pretrained(
-                model_name_or_path,
-                torch_dtype="auto",
-                device_map="auto")
-    elif model_name_or_path == "openbmb/MiniCPM-o-2_6":
-        model = AutoModel.from_pretrained(
-            model_name_or_path,
-            attn_implementation="flash_attention_2",
+    # if model_name_or_path == "Qwen/Qwen3-8B":
+    #     processor = AutoTokenizer.from_pretrained(model_name_or_path)
+    #     model = AutoModelForCausalLM.from_pretrained(
+    #             model_name_or_path,
+    #             torch_dtype="auto",
+    #             device_map="auto")
+    # if model_name_or_path == "openbmb/MiniCPM-o-2_6":
+    #     model = AutoModel.from_pretrained(
+    #         model_name_or_path,
+    #         attn_implementation="flash_attention_2",
+    #         torch_dtype=torch.float16,
+    #         device_map="auto",
+    #         trust_remote_code=True)
+    #     processor = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+    # else:
+    """
+    Setup the Qwen 2.5 VL model and processor with optimizations.
+    """
+    from transformers import Qwen2VLForConditionalGeneration
+    processor = AutoProcessor.from_pretrained(model_name_or_path)
+    if use_peft:
+        from peft import PeftConfig, PeftModel
+        config = PeftConfig.from_pretrained(model_name_or_path)
+        print("Loading LoRA model from {}".format(model_name_or_path))
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            config.base_model_name_or_path,
             torch_dtype=torch.float16,
-            device_map="auto",
-            trust_remote_code=True)
-        processor = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+            attn_implementation="flash_attention_2",
+            device_map="auto",)
+        model = PeftModel.from_pretrained(model, model_name_or_path)
     else:
-        """
-        Setup the Qwen 2.5 VL model and processor with optimizations.
-        """
-        from transformers import Qwen2VLForConditionalGeneration
-        logging.info(f"Loading model from {model_name_or_path}")
-        processor = AutoProcessor.from_pretrained(model_name_or_path)  
+        logging.info(f"Loading model from {model_name_or_path}")  
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_name_or_path,
             torch_dtype=torch.float16,
             attn_implementation="flash_attention_2",
             device_map="auto"  # Let it automatically distribute
         )  
-    # if hasattr(torch, 'compile'):
-    #     try:
-    #         model = torch.compile(model, mode="reduce-overhead")
-    #     except:
-    #        logger.exception("Model compilation failed, continuing without compilation")
-    
     model.eval()
-    
-    # Disable gradient computation globally for inference
     for param in model.parameters():
         param.requires_grad = False
         
     return model, processor
 
-def speaker_describes_batch(model, processor, images, problems, max_new_tokens=256):
+def speaker_describes_batch(model, processor, images, problems, max_new_tokens=128, num_return_sequences=1):
     """
-    Process multiple speaker descriptions in batch for better efficiency.
+    Process images one at a time with multiple generations per image to avoid OOM.
     """
     if not isinstance(images, list):
         images = [images]
     if not isinstance(problems, list):
         problems = [problems]
-    # Prepare all messages
-    all_messages = []
+    
+    all_outputs = []
+    
+    # Process ONE image at a time
     for image, problem in zip(images, problems):
         if 'Qwen' in model.name_or_path:
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": image},
-                        {"type": "text", "text": problem},
-                    ],
-                }
-            ]
-        elif 'MiniCPM' in model.name_or_path:
-            messages = [{'role': 'user', 'content': [image, problem]}]
-        all_messages.append(messages)
-    
-    # Process all texts
-    if 'MiniCPM' in model.name_or_path:
-       _, output_texts = model.chat(msgs=all_messages, tokenizer=processor)
-    else:
-        from qwen_vl_utils import process_vision_info
-        texts = []
-        all_image_inputs = []
-        all_video_inputs = []
-        
-        for messages in all_messages:
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": problem},
+                ],
+            }]
+            
+            from qwen_vl_utils import process_vision_info
+            
             text = processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
-            texts.append(text)
-            
             image_inputs, video_inputs = process_vision_info(messages)
-            all_image_inputs.extend(image_inputs if image_inputs else [])
-            all_video_inputs.extend(video_inputs if video_inputs else [])
-        
-        # Batch process
-        inputs = processor(
-            text=texts,
-            images=all_image_inputs if all_image_inputs else None,
-            videos=all_video_inputs if all_video_inputs else None,
-            padding=True,
-            return_tensors="pt",
-        )
-        device = next(model.parameters()).device
-        for k, v in inputs.items():
-            if hasattr(v, "to"):
-                inputs[k] = v.to(device)
-        dtype = next(model.parameters()).dtype
-        use_autocast = (model.device.type == "cuda") and (dtype == torch.float16)
-        with torch.no_grad():
-            if use_autocast:
-                with torch.autocast(device_type="cuda", dtype=torch.float16):
-                    generated_ids = model.generate(
-                        **inputs, 
-                        max_new_tokens=max_new_tokens,
-                        do_sample=False,  # Deterministic for consistency
-                        use_cache=True,   # Enable KV cache for speed
-                        pad_token_id=processor.tokenizer.eos_token_id,
-                        temperature=0.4,  # Add explicit temperature
-                        top_p=0.9,
-                        repetition_penalty=1.0  # Add repetition penalty
-                    )
-            else:
-                generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens,)
-        
-        # Decode outputs
-        input_ids = inputs.get("input_ids", None)
-        trimmed = []
-        if input_ids is not None:
-            for in_ids, out_ids in zip(input_ids, generated_ids):
-                in_len = in_ids.shape[0]
-                trimmed.append(out_ids[in_len:].unsqueeze(0))
-            generated_ids_trimmed = torch.cat(trimmed, dim=0)
-        else:
-            generated_ids_trimmed = generated_ids  # no trimming possible
-        tokenizer = getattr(processor, "tokenizer", None)
-        if tokenizer is None:
-            try:
-                from transformers import AutoTokenizer
-                tokenizer = AutoTokenizer.from_pretrained(getattr(processor, "name_or_path", model.config._name_or_path))
-            except Exception:
-                tokenizer = None
-        if tokenizer is not None:
-            output_texts = processor.batch_decode(
-                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            
+            # Single image input
+            inputs = processor(
+                text=[text],
+                images=image_inputs if image_inputs else None,
+                videos=video_inputs if video_inputs else None,
+                padding=True,
+                return_tensors="pt",
             )
-        else:
-            output_texts = [str(x.tolist()) for x in generated_ids_trimmed]
-        del inputs
-    torch.cuda.empty_cache()
-    # return output_texts if len(output_texts) > 1 else output_texts[0]
-    return list(output_texts)
+            
+            device = next(model.parameters()).device
+            inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+            if num_return_sequences > 1:
+                gen_kwargs = {
+                    "max_new_tokens": max_new_tokens,
+                    "do_sample": False,
+                    "num_beams":num_return_sequences * 2,
+                    "num_beam_groups": num_return_sequences,
+                    "diversity_penalty":1.0,
+                    "num_return_sequences": num_return_sequences,
+                    "pad_token_id": processor.tokenizer.eos_token_id,
+                }
+            else:
+                gen_kwargs = {
+                    "max_new_tokens":max_new_tokens,
+                    "do_sample":True,
+                    "temperature":0.7,
+                    "top_p":0.9,
+                    "num_return_sequences":num_return_sequences,  # Multiple sequences for THIS image
+                    "pad_token_id":processor.tokenizer.eos_token_id,
+                }
+            with torch.no_grad():
+                generated_ids = model.generate(
+                    **inputs,
+                    **gen_kwargs
+                )
+            
+            # Decode
+            input_len = inputs["input_ids"].shape[1]
+            generated_ids_trimmed = generated_ids[:, input_len:]
+            
+            output_texts = processor.batch_decode(
+                generated_ids_trimmed,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False
+            )
+            
+            all_outputs.append(output_texts)  # Add all sequences from this image            # Clean up immediately
+            del inputs, generated_ids, generated_ids_trimmed
+            torch.cuda.empty_cache()
+        
+        elif 'MiniCPM' in model.name_or_path:
+            # Handle MiniCPM
+            messages = [{'role': 'user', 'content': [image, problem]}]
+            _, output_texts = model.chat(msgs=[messages], tokenizer=processor)
+            all_outputs.append(output_texts)
+    
+    return all_outputs
 
 if __name__ == "__main__":
     import argparse

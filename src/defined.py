@@ -25,7 +25,7 @@ yollava_reverse_category_dict = {
     'mam': 'pet animal',
     'mydieu': 'pet animal',
     'shiba-yellow': 'toy',
-    'pusheen-cup': 'toy',
+    'pusheen-cup': 'mug',
     'neurips-cup': 'toy',
     'tokyo-keyboard': 'electronic',
     'cat-cup': 'cup',

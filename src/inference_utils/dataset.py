@@ -97,13 +97,17 @@ class SimpleImageDataset(Dataset):
         else:
             category = self.category
         problem = (
-            f'Describe the {category} in the image so that it can be distinguished from other {category} objects. '
-            "Do NOT mention background, location or state of the object. "
-            "If the image contains a person, avoid mentioning the clothing or accesories."
-            f'Write exactly one fluent sentence that begins with "The {category}" and highlights 3–4 visible distinguishing attributes. '
-            "Keep the description concise and natural, without using lists or brackets. "
-            "Output the thinking process in <think> </think> and the personalized caption in <answer> </answer> tags."
-        )
+            f'Provide two descriptions of the {category} in the image:\n'
+            f'1. A coarse 5-6 word description starting with "A photo of a "\n'
+            f'2. A detailed description: Describe the {category} so it can be distinguished from other {category} objects. '
+            "Do NOT mention background, location or state. "
+            "If the image contains a person, avoid mentioning clothing or accessories. "
+            f'Write exactly one fluent sentence beginning with "The " and highlighting 3-4 visible distinguishing attributes. '
+            "Keep it concise and natural, without lists or brackets.\n\n"
+            "Output format:\n"
+            "<thinking>Your reasoning</thinking>\n"
+            f"<coarse>A photo of a ...</coarse>\n"
+            f"<detailed>The ...</detailed>")
         return {
             'image': image,
             'problem': problem,

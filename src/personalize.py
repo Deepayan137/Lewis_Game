@@ -1,8 +1,9 @@
 from __future__ import annotations
-
+import re
 import json
 import logging
 import os
+import string
 import random
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
@@ -19,7 +20,7 @@ from inference_utils.model import setup_model, speaker_describes_batch
 from inference_utils.retriever import SimpleClipRetriever
 from inference_utils.cleanup import extract_reasoning_answer_term, extract_speaker_answer_term
 from generate_descriptions import run_description_generation
-
+from defined import yollava_reverse_category_dict, myvlm_reverse_category_dict
 LOG = logging.getLogger(__name__)
 
 
@@ -31,57 +32,56 @@ def set_seed(seed: int) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
+def format_extra_info(extra_info, names) -> str:
+    """Format name→description pairs as lettered options (A., B., ...)."""
+    letters = list(string.ascii_uppercase)
+    lines = []
+    for i, (info) in enumerate(extra_info):
+        label = letters[i] if i < len(letters) else f"Option {i+1}"
+        info = info.split(":")[1]
+        lines.append(f"{label}. {info.strip()}")
+    return "\n".join(lines)
 
-def get_prompt(descriptions: Sequence[str], category: str,  query_desc="") -> str:
+def get_prompt(descriptions: Sequence[str], category: str,  names, query_desc="",) -> str:
     """
     Build the prompt used to ask the model to reason and return a JSON
     with keys "Reasoning" and "Answer".
     `descriptions` is typically a list of strings (distinguishing features).
     """
-    answer_format = {
-        "Reasoning": "<Your reasoning in 1-2 sentences.>",
-        "Answer": "<name of the object>",
-    }
+    n = len(names)
+    letters = [string.ascii_uppercase[i] for i in range(n)]
+    test_question = (
+        f"Which description matches the {category} in the image? "
+        f"Answer in {', '.join([chr(65 + i) for i in range(n)])}."
+    )
+    # answer_format = {chr(65 + i): f"[Matching attributes for option {chr(65 + i)}]" for i in range(len(names))}
+    answer_format = {}
+    answer_format.update({
+        "Reasoning": "<Brief justification>",
+        # "Answer": f"<one of {names}>",
+        "Answer": f"one of {letters}"
+    })
 
     descriptions_block = json.dumps(descriptions, indent=2, ensure_ascii=False)
-    if query_desc != "":
-        prompt = (
-            f"You are provided with a query image containing a {category} object, "
-            f"the detailed distinguishing features (description) of this query object, "
-            f"and the name and descriptions of several other {category} objects.\n\n"
-            "Query object description:\n"
-            f"{query_desc}\n\n"
-            "Other objects (name and description):\n"
-            f"{descriptions_block}\n\n"
-            "Your Task:\n"
-            "- Carefully compare the query object (image + its provided description) "
-            "with the provided descriptions of the other objects.\n"
-            "- Identify the name of the object in the query image.\n"
-            "- Your response MUST be a JSON exactly matching the format:\n"
-            f"{json.dumps(answer_format)}\n"
-            "- Output only the JSON response, with no extra text. "
-            "Ignore superficial details such as background, pose, or lighting.\n"
-            )
-    else:
-        prompt = (
-            f"You are provided with a query image containing a {category} object, "
-            f"as well as the names and distinguishing descriptions of several other {category} objects.\n\n"
-            "Other objects:\n"
-            f"{descriptions_block}\n\n"
-            "Your Task:\n"
-            "1. Generate an attribute-focused description of the query image object. "
-            "Focus on its distinguishing features rather than superficial details such as background, pose, or lighting.\n"
-            "2. Compare your generated description of the query image with the provided descriptions of the other objects.\n"
-            "3. Identify which object from the provided list matches the query image.\n\n"
-            "Output Requirements:\n"
-            f"- Your response MUST be a valid JSON exactly matching the format:\n{json.dumps(answer_format)}\n"
-            "- Do not include any extra text, explanations, or formatting outside of the JSON.\n"
-        )
-
+    prompt = (
+        f"You are provided with a query image containing a {category} "
+        f"along with the name and detailed distinguishing features of several other {category}s.\n\n"
+        "Below are the name and their descriptions:\n"
+        f"{descriptions_block}\n\n"
+        "Your Task:\n"
+        f"1. Generate an attribute-focused description of the {category} in the query image. "
+        "Focus on its distinguishing features rather than superficial details such as background, pose, lighting, clothes or accessories.\n"
+        f"2. Compare your generated description of the query image with the provided descriptions of the other {category}s.\n"
+        f"3. Identify the name of the {category} in the query image from the best match.\n\n"
+        "Output Requirements:\n"
+        f"- Your response MUST be a valid JSON exactly matching the format:\n{json.dumps(answer_format)}\n"
+        "- Do not include any extra text, explanations, or formatting outside of the JSON.\n"
+    )
+    
     return prompt
 
 def generate_query_description(args, data_loader):
-    if args.model_type == 'original':
+    if args.db_type == 'original':
         model_path = "Qwen/Qwen2-VL-2B-Instruct"
     else:
         model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.category}_test_subset"
@@ -115,7 +115,7 @@ def prepare_test_retrieval_items(
     """
     savedir = Path('outputs') / args.data_name / args.category / f'seed_{args.seed}'
     savedir.mkdir(parents=True, exist_ok=True)
-    test_ret_path = savedir / f'{args.model_type}_test_set.json'
+    test_ret_path = savedir / f'{args.db_type}_test_set.json'
     # INSERT_YOUR_CODE
     if test_ret_path.exists() and use_query_desc:
         LOG.info(f"{test_ret_path} already exists. Loading and returning existing data.")
@@ -128,6 +128,7 @@ def prepare_test_retrieval_items(
             category=category,
             split="test",
             seed=retriever.seed if hasattr(retriever, "seed") else 0,
+            data_name=args.data_name
         )
         data_loader = create_data_loader(dataset, batch_size=args.batch_size)
         query_descs = []
@@ -144,26 +145,44 @@ def prepare_test_retrieval_items(
         items: List[Dict[str, Any]] = []
         for idx, item in enumerate(tqdm(dataset, desc="Preparing retrieval items")):
             query_path = item["path"]
+            query_name = item['name']
             query_desc = query_descs[idx] if len(query_descs) > 0 else ""
             # retrieve K nearest neighbors (clip search)
-            results = retriever.image_search(query_path, k=k)
+            results = retriever.hybrid_search(query_path,
+                     k=k, 
+                    alpha=0.5,
+                    normalization='minmax',
+                    aggregation='weighted_sum',
+                    image_k=len(desc_lookup),
+                    text_k=len(desc_lookup))
             descriptions: List[str] = []
             ret_paths: List[str] = []
-            for r in results:
+            names = []
+            import string
+            letters = list(string.ascii_uppercase)[:len(results)]
+            letter2name = {}
+            for i, r in enumerate(results):
                 name = r.get("name")
+                letter = letters[i]
+                letter2name[letter] = name
+                names.append(name)
                 if concept_dict_format: name = f'<{name}>'
                 if name and name in desc_lookup:
                     if concept_dict_format:
-                        descriptions.append(f"{name}: {desc_lookup[name]['info']['general']}")
+                        descriptions.append(f"Name: {letter}, Info: {desc_lookup[name]['info']['general']}")
                     else:
-                        descriptions.append(f"{name}: {desc_lookup[name]}")
+                        descriptions.append(f"Name: {letter}, Info: {desc_lookup[name]}")
                 # keep the returned path for diagnostics
                 if "path" in r:
                     ret_paths.append(r["path"])
 
             if not descriptions:
                 descriptions = ["No description available."]
-            prompt = get_prompt(descriptions, category, query_desc)
+            if args.data_name == "YoLLaVA":
+                category_dict = yollava_reverse_category_dict
+            elif args.data_name == "MyVLM":
+                category_dict = myvlm_reverse_category_dict
+            prompt = get_prompt(descriptions, category_dict[query_name], names, query_desc)
             items.append(
                 {
                     "path": query_path,
@@ -171,7 +190,8 @@ def prepare_test_retrieval_items(
                     "solution": item["name"],
                     "solution_desc": desc_lookup.get(item["name"], ""),
                     "ret_path": ret_paths,
-                    "query_desc": query_desc
+                    "query_desc": query_desc,
+                    "letter2name": letter2name
                 }
             )
         if use_query_desc:
@@ -194,6 +214,7 @@ def run_inference_loop(
     ret_paths, response (raw model text), pred_name (cleaned)
     """
     dataset = DictListDataset(list(items))
+    
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=False, collate_fn=dict_collate_fn, num_workers=4
     )
@@ -220,6 +241,7 @@ def run_inference_loop(
         sol_descs = [it.get("solution_desc", "") for it in batch]
         paths = [it.get("path") for it in batch]
         ret_paths = [it.get("ret_path", []) for it in batch]
+        letter2names = [it.get("letter2name", []) for it in batch]
         try:
             responses = speaker_describes_batch(model, processor, images, problems, max_new_tokens=max_new_tokens)
         except Exception:
@@ -242,20 +264,22 @@ def run_inference_loop(
         # speaker_describes_batch may return a single string when batch_size==1
         if isinstance(responses, str):
             responses = [responses]
-
         # clean predicted "Answer" using provided utility
-        pred_names = []
+        pred_names = [] 
         for resp in responses:
             try:
+                if isinstance(resp, list):
+                    resp = resp[0]
                 term = extract_reasoning_answer_term(resp, "Answer")
-                
-                pred_names.append(term.lower().strip())
+                pred_names.append(term.strip())
             except Exception:
                 LOG.exception("Failed to extract answer term from model response; using empty string")
                 pred_names.append("")
 
-        for path, gt, sol_desc, rp, resp, pred in zip(paths, gt_names, sol_descs, ret_paths, responses, pred_names):
-            is_correct = int(pred == gt)
+        for path, gt, sol_desc, rp, resp, pred, lt2nm in zip(paths, gt_names, sol_descs, ret_paths, responses, pred_names, letter2names):
+            pred_name = lt2nm[pred]
+            is_correct = int(pred_name.lower() == gt.lower())
+            # is_correct = gt.lower() in pred.lower()
             correct_count += is_correct
             results.append(
                 {
@@ -265,7 +289,7 @@ def run_inference_loop(
                     "solution_desc": sol_desc,
                     "ret_paths": rp,
                     "response": resp,
-                    "pred_name": pred,
+                    "pred_name": pred_name,
                     "correct": bool(is_correct),
                 }
             )
@@ -273,24 +297,25 @@ def run_inference_loop(
         # free cuda mem (harmless if CPU)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
     accuracy = correct_count / len(results) if results else 0.0
-    return results, accuracy
+    return results, accuracy, correct_count, len(results)
 
 
 def parse_args() -> argparse.Namespace:
     import argparse
 
     parser = argparse.ArgumentParser(description="Reasoning-based personalization evaluation")
-    parser.add_argument("--data_name", type=str, default="PerVA")
+    parser.add_argument("--data_name", type=str, default="YoLLaVA")
     parser.add_argument("--catalog_file", type=str, default="main_catalog_seed_23.json")
-    parser.add_argument("--category", type=str, default="clothe")
+    parser.add_argument("--category", type=str, default="all")
+    parser.add_argument("--concept_name", type=str, default="bo")
     parser.add_argument("--seed", type=int, default=23)
-    parser.add_argument("--model_type", type=str, default="original", choices=["original", "finetuned"])
+    parser.add_argument("--db_type", type=str, default="original", choices=["original_2b", "original_7b", "finetuned_2b", 'finetuned_7b', 'lora_finetuned_2b', 'lora_finetuned_2b_with_neg', 'lora_finetuned_7b', 'lora_finetuned_7b_with_neg'])
+    parser.add_argument("--model_type", type=str, default="base_qwen", choices=["base_qwen_7b", "ft_qwen_7b", "base_qwen_2b", "ft_qwen_2b", "lora_qwen_2b", "lora_qwen_7b", "lora_qwen_7b_with_neg"])
     parser.add_argument("--model_path", type=str, default="Qwen/Qwen2-VL-7B-Instruct")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_new_tokens", type=int, default=128)
-    parser.add_argument("--k_retrieval", type=int, default=5)
+    parser.add_argument("--k_retrieval", type=int, default=3)
     parser.add_argument("--output_dir", type=str, default="results")
     return parser.parse_args()
 
@@ -303,7 +328,7 @@ def main():
     LOG.info("Args: %s", args)
 
     manifests_dir = Path("manifests") / args.data_name
-    description_json = Path("outputs") / args.data_name / args.category / f"seed_{args.seed}" / f"descriptions_{args.model_type}.json"
+    description_json = Path("outputs") / args.data_name / args.category / f"seed_{args.seed}" / f"descriptions_{args.db_type}.json"
     catalog_json = str(manifests_dir / args.catalog_file)
     if not description_json.exists():
         LOG.error("Descriptions file not found at %s", description_json)
@@ -311,10 +336,12 @@ def main():
 
     # initialize retriever
     retriever = SimpleClipRetriever(
+        dataset=args.data_name,
         category=args.category,
         json_path=catalog_json,
         create_index=True,
         seed=args.seed,
+        db_type=args.db_type
     )
     LOG.info("Retriever created")
 
@@ -327,13 +354,31 @@ def main():
         retriever, 
         k=args.k_retrieval)
     LOG.info("Prepared %d test items", len(items))
-
+    if args.concept_name != '':
+        items = [item for item in items if item.get("solution") == args.concept_name]
     # load model
-    LOG.info("Loading model from %s", args.model_path)
-    model, processor = setup_model(args.model_path)
+    model_paths = {
+        'base_qwen_7b': "Qwen/Qwen2-VL-7B-Instruct",
+        'base_qwen_2b': "Qwen/Qwen2-VL-2B-Instruct",
+        ('ft_qwen_2b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
+        ('ft_qwen_7b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
+        ('lora_qwen_7b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
+        ('lora_qwen_7b_with_neg', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_with_neg_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
+        ('lora_qwen_2b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3"    
+    }
 
+    if args.model_type in ['base_qwen_7b', 'base_qwen_2b']:
+        model_path = model_paths[args.model_type]
+    else:
+        model_path = model_paths.get((args.model_type, args.k_retrieval))
+        # model_path = f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LISTENER_prompt2_epoch2_YoLLaVA_all_train_seed_23"
+    LOG.info("Loading model from %s", model_path)
+    use_peft = False
+    if args.model_type.startswith('lora_qwen'):
+        use_peft = True
+    model, processor = setup_model(model_path, use_peft=use_peft)
     # run inference
-    results, accuracy = run_inference_loop(
+    results, accuracy, correct_count, total_samples = run_inference_loop(
         model,
         processor,
         items,
@@ -343,10 +388,17 @@ def main():
 
     # save results & stats
     outdir = Path(args.output_dir) / args.data_name / args.category
+    if args.concept_name != '':
+        outdir = Path(outdir) / 'concepts' / args.concept_name / f'seed_{str(args.seed)}'
     outdir.mkdir(parents=True, exist_ok=True)
-    outpath = outdir / f"results_{args.model_type}_seed_{args.seed}.json"
-
-    output = {"accuracy": accuracy, "results": results}
+    outpath = outdir / f"results_model_{args.model_type}_db_{args.db_type}_k_{args.k_retrieval}.json"
+    output = {
+        "metrics":{
+            "accuracy":accuracy,
+            "correct count": correct_count,
+            "total samples": total_samples 
+            }, 
+        "results": results}
     with outpath.open("w", encoding="utf-8") as fh:
         json.dump(output, fh, indent=2, ensure_ascii=False)
 

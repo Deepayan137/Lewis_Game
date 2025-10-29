@@ -18,7 +18,7 @@ def gather_images(folder: Path, relative_to: Path = None) -> List[str]:
     return [str(p) for p in imgs]
 
 
-def build_catalog_from_explicit_splits(data_root: Path, train_dirname: str, test_dirname: str, relative: bool):
+def build_catalog_from_explicit_splits(data_root: Path, train_dirname: str, test_dirname: str, relative: bool, num_train:int):
     """
     Build catalog using explicit train_/test_ subfolders (your layout).
     """
@@ -49,13 +49,22 @@ def build_catalog_from_explicit_splits(data_root: Path, train_dirname: str, test
         for concept in sorted(concepts):
             train_list = []
             test_list = []
+            neg_list = []
             tdir = train_cat_dir / concept
             if tdir.exists():
                 train_list = gather_images(tdir, relative_to=base)
+                n = len(train_list)
+                k = max(1, min(num_train, n))
+                shuffled = train_list.copy()
+                random.shuffle(shuffled)
+                train_list = shuffled[:k]
             sdir = test_cat_dir / concept
             if sdir.exists():
                 test_list = gather_images(sdir, relative_to=base)
-            catalog[cat][concept] = {"train": train_list, "test": test_list}
+            ndir = tdir / 'laion'
+            if ndir.exists():
+                neg_list = gather_images(ndir, relative_to=base)
+            catalog[cat][concept] = {"train": train_list, "test": test_list, "negative":neg_list}
 
     return catalog
 
@@ -137,7 +146,7 @@ def main():
 
     if train_dir.exists() or test_dir.exists():
         print(f"Detected explicit split layout under {data_root} using '{args.train_dirname}' and '{args.test_dirname}'.")
-        catalog = build_catalog_from_explicit_splits(data_root, args.train_dirname, args.test_dirname, relative)
+        catalog = build_catalog_from_explicit_splits(data_root, args.train_dirname, args.test_dirname, relative, args.num_train)
     else:
         print(f"No explicit train_/test_ directories found. Scanning categories under {data_root} and splitting per concept.")
         catalog = build_catalog_by_splitting(
