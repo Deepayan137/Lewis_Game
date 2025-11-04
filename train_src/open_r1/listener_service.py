@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException
 import uvicorn
 import torch, gc
 from PIL import Image
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from transformers import Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info  # your util that prepares vision inputs
 import torch.nn.functional as F
 
@@ -58,9 +58,16 @@ class ListenerService:
 
         print(f"[listener] loading model {model_name} with kwargs: {load_kwargs}")
         # Load model (trust_remote_code in case of custom Qwen code)
-        self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+        if 'Qwen/Qwen2.5-VL' in model_name:
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_name, trust_remote_code=True, **load_kwargs
-        )
+        )    
+        elif 'Qwen/Qwen2-VL' in model_name:
+            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+                model_name, trust_remote_code=True, **load_kwargs
+            )
+        else:
+            raise ValueError(f"Incorrect model name: {model_name}")
         self.model.eval()
 
         self.processor = AutoProcessor.from_pretrained(model_name)
@@ -139,6 +146,7 @@ class ListenerService:
         gen_kwargs = dict(
             max_new_tokens=max_new_tokens,
             do_sample=False,
+            num_beams=1,
             return_dict_in_generate=True,
             output_scores=True,
         )
@@ -252,11 +260,11 @@ listener: Optional[ListenerService] = None
 def startup():
     global listener
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--use_8bit", action="store_true")
     parser.add_argument("--device", type=str, default="cuda:0")
     args, _ = parser.parse_known_args()
-    print("[listener_service] starting up, loading model...")
+    print(f"[listener_service] starting up, loading model {args.model_name}")
     listener = ListenerService(model_name=args.model_name, use_8bit=args.use_8bit, device=args.device)
     print("[listener_service] ready.")
 
@@ -348,7 +356,7 @@ def batch_score(req: BatchScoreRequest):
                 cur += cnt
                 predicted = int(torch.tensor(sub).argmax().item()) if len(sub) > 0 else -1
                 results[orig_idx] = {"yes_probabilities": sub, "predicted_index": predicted}
-
+        print(f"[results]->{results}")
         took = time.time() - start
         return {"results": results, "took": took}
 

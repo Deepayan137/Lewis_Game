@@ -4,7 +4,7 @@ import threading
 import time
 import torch, gc
 import torch.nn.functional as F
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from transformers import Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 import argparse
 from PIL import Image
@@ -53,17 +53,136 @@ def extract_speaker_answer_term(text: str) -> str:
 
     return text
 
+def parse_descriptions(output, category=None):
+    """
+    Extract coarse and detailed descriptions from model output with fallback strategies.
+    
+    Args:
+        output: Model generation output string
+        category: Optional category name for better fallback parsing
+    
+    Returns:
+        dict with 'thinking', 'coarse', 'detailed' keys
+    """
+    
+    result = {
+        "thinking": "",
+        "coarse": "",
+        "detailed": ""
+    }
+    
+    # ========== Extract Thinking ==========
+    thinking_match = re.search(r'<thinking>(.*?)</thinking>', output, re.DOTALL)
+    if thinking_match:
+        result["thinking"] = thinking_match.group(1).strip()
+    else:
+        # Fallback: Extract thinking without closing tag
+        thinking_fallback = re.search(r'<thinking>(.*?)(?=<coarse|<detailed|$)', output, re.DOTALL)
+        if thinking_fallback:
+            result["thinking"] = thinking_fallback.group(1).strip()
+    
+    # ========== Extract Coarse Description ==========
+    # Strategy 1: Try with both tags
+    coarse_match = re.search(r'<coarse>(.*?)</coarse>', output, re.DOTALL)
+    
+    if coarse_match:
+        result["coarse"] = coarse_match.group(1).strip()
+    else:
+        # Strategy 2: Opening tag exists but no closing tag
+        coarse_fallback = re.search(r'<coarse>(.*?)(?=<detailed|<thinking|$)', output, re.DOTALL)
+        if coarse_fallback:
+            content = coarse_fallback.group(1).strip()
+            # Take first line or until newline
+            result["coarse"] = content.split('\n')[0].strip()
+        else:
+            # Strategy 3: Look for "A photo of a" pattern
+            photo_pattern = re.search(r'(A photo of a [^\n.]{5,50})', output, re.IGNORECASE)
+            if photo_pattern:
+                result["coarse"] = photo_pattern.group(1).strip()
+    
+    # ========== Extract Detailed Description ==========
+    # Strategy 1: Try with both tags
+    detailed_match = re.search(r'<detailed>(.*?)</detailed>', output, re.DOTALL)
+    
+    if detailed_match:
+        result["detailed"] = detailed_match.group(1).strip()
+    else:
+        # Strategy 2: Opening tag exists but no closing tag
+        detailed_fallback = re.search(r'<detailed>(.*?)(?=<coarse|<thinking|$)', output, re.DOTALL)
+        if detailed_fallback:
+            content = detailed_fallback.group(1).strip()
+            # Take first sentence or until newline
+            result["detailed"] = content.split('\n')[0].strip()
+        else:
+            # Strategy 3: Look for "The {category}" pattern
+            if category:
+                category_pattern = re.search(
+                    rf'(The {re.escape(category)}[^\n]*?(?:\.|$))', 
+                    output, 
+                    re.IGNORECASE
+                )
+                if category_pattern:
+                    result["detailed"] = category_pattern.group(1).strip()
+            else:
+                # Strategy 4: Look for any "The X" pattern
+                the_pattern = re.search(r'(The [A-Za-z]+[^\n]{20,200}?\.)', output)
+                if the_pattern:
+                    result["detailed"] = the_pattern.group(1).strip()
+    
+    # ========== Cleanup ==========
+    # Remove any remaining XML tags
+    result["coarse"] = re.sub(r'</?[^>]+>', '', result["coarse"]).strip()
+    result["detailed"] = re.sub(r'</?[^>]+>', '', result["detailed"]).strip()
+    
+    # Remove extra whitespace
+    result["coarse"] = ' '.join(result["coarse"].split())
+    result["detailed"] = ' '.join(result["detailed"].split())
+    str_result = result['coarse'] + ' ' +result['detailed']
+    return str_result
+
 
 class SpeakerService(ListenerService):
-    def __init__(self, model_name="Qwen/Qwen2-VL-2B-Instruct", device: str = "cuda:0"):
+    def __init__(self, model_name="Qwen/Qwen2.5-VL-2B-Instruct", device: str = "cuda:0", use_peft=True):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.model_name = model_name
         load_kwargs = {"torch_dtype": torch.float16, "device_map": {"": device}}
-        self.model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_name, trust_remote_code=True, **load_kwargs
-        )
-        self.model.eval()
         self.processor = AutoProcessor.from_pretrained(model_name)
+        if use_peft:
+            from peft import PeftConfig, PeftModel
+            config = PeftConfig.from_pretrained(self.model_name)
+            print("Loading LoRA model from {}".format(self.model_name))
+            if 'Qwen/Qwen2-VL' in model_name:
+                model = Qwen2VLForConditionalGeneration.from_pretrained(
+                    config.base_model_name_or_path,
+                    torch_dtype=torch.float16,
+                    attn_implementation="flash_attention_2",
+                    device_map=device,)
+            elif 'Qwen/Qwen2.5-VL' in model_name:
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    config.base_model_name_or_path, 
+                    torch_dtype=torch.float16,
+                    attn_implementation="flash_attention_2",
+                    device_map=device,)
+            else:
+                raise ValueError(f"Incorrect model name: {model_name}")
+            self.model = PeftModel.from_pretrained(model, self.model_name)
+        else:
+            print(f"Loading Model from {self.model_name}")
+            if 'Qwen/Qwen2.5-VL' in model_name:
+                self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    model_name, 
+                    attn_implementation="flash_attention_2", 
+                    trust_remote_code=True, 
+                    **load_kwargs)
+            elif 'Qwen/Qwen2-VL' in model_name:
+                self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+                    model_name, 
+                    attn_implementation="flash_attention_2", 
+                    trust_remote_code=True, 
+                    **load_kwargs)
+            else:
+                raise ValueError(f"Incorrect model name: {model_name}")
+        self.model.eval()
         self.baseline = 0.0  # Just a scalar!
         self.baseline_momentum = 0.9
         # super().__init__(model_name=model_name, use_8bit=False, device=device)
@@ -132,8 +251,9 @@ class SpeakerService(ListenerService):
             generated_ids = self._generate(inputs, max_new_tokens=max_new_tokens)
             generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
             response = self.processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0].strip()
-            response_clean = extract_speaker_answer_term(response)
-            responses.append(response_clean)
+            # response_clean = extract_speaker_answer_term(response)
+            response_clean = parse_descriptions(response)
+            responses.append(response_clean) # <-- change here
             try:
                 # remove references that may hold GPU memory (gen_out carries scores/sequences)
                 del generated_ids
@@ -158,11 +278,11 @@ speaker: Optional[SpeakerService] = None
 def startup():
     global speaker
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_YoLLaVA_all_train_seed_23")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--device", type=str, default="cuda:0")
     args, _ = parser.parse_known_args()
     print("[speaker_service] starting up, loading model...")
-    speaker= SpeakerService(model_name=args.model_name, device=args.device)
+    speaker= SpeakerService(model_name=args.model_name, device=args.device, use_peft=False)
     print("[speaker_service] ready.")
 
 @app.post("/describe")
@@ -257,7 +377,6 @@ def batch_describe(req: BatchDescribeRequest):
 
 # ---- run server (if executed directly) ----
 if __name__ == "__main__":
-    import sys
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9000)
@@ -265,5 +384,12 @@ if __name__ == "__main__":
     parser.add_argument("--device", type=str, default="cuda:0")
     args = parser.parse_args()
 
-    # start uvicorn programmatically (single worker, single process)
-    uvicorn.run("speaker_service:app", host="0.0.0.0", port=args.port, log_level="info", access_log=False, reload=True)
+    # store args globally so startup() can access
+    service_args = args
+
+    uvicorn.run("speaker_service:app",
+                host=args.host,
+                port=args.port,
+                reload=True,
+                access_log=False,
+                log_level="info")

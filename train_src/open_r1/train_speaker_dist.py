@@ -26,6 +26,7 @@ from trl import GRPOConfig, GRPOTrainer, ModelConfig, ScriptArguments, TrlParser
 # from listener import Listener
 # from listener_service import ListenerService
 from dist_helpers import *
+from speaker_service import parse_descriptions
 import json
 
 logger = PredictionLogger(log_path=os.getenv("LOG_PATH"))
@@ -52,6 +53,92 @@ def extract_answer_content(text):
     else:
         return ""
 
+def parse_descriptions(output, category=None):
+    """
+    Extract coarse and detailed descriptions from model output with fallback strategies.
+    
+    Args:
+        output: Model generation output string
+        category: Optional category name for better fallback parsing
+    
+    Returns:
+        dict with 'thinking', 'coarse', 'detailed' keys
+    """
+    
+    result = {
+        "thinking": "",
+        "coarse": "",
+        "detailed": ""
+    }
+    
+    # ========== Extract Thinking ==========
+    thinking_match = re.search(r'<thinking>(.*?)</thinking>', output, re.DOTALL)
+    if thinking_match:
+        result["thinking"] = thinking_match.group(1).strip()
+    else:
+        # Fallback: Extract thinking without closing tag
+        thinking_fallback = re.search(r'<thinking>(.*?)(?=<coarse|<detailed|$)', output, re.DOTALL)
+        if thinking_fallback:
+            result["thinking"] = thinking_fallback.group(1).strip()
+    
+    # ========== Extract Coarse Description ==========
+    # Strategy 1: Try with both tags
+    coarse_match = re.search(r'<coarse>(.*?)</coarse>', output, re.DOTALL)
+    
+    if coarse_match:
+        result["coarse"] = coarse_match.group(1).strip()
+    else:
+        # Strategy 2: Opening tag exists but no closing tag
+        coarse_fallback = re.search(r'<coarse>(.*?)(?=<detailed|<thinking|$)', output, re.DOTALL)
+        if coarse_fallback:
+            content = coarse_fallback.group(1).strip()
+            # Take first line or until newline
+            result["coarse"] = content.split('\n')[0].strip()
+        else:
+            # Strategy 3: Look for "A photo of a" pattern
+            photo_pattern = re.search(r'(A photo of a [^\n.]{5,50})', output, re.IGNORECASE)
+            if photo_pattern:
+                result["coarse"] = photo_pattern.group(1).strip()
+    
+    # ========== Extract Detailed Description ==========
+    # Strategy 1: Try with both tags
+    detailed_match = re.search(r'<detailed>(.*?)</detailed>', output, re.DOTALL)
+    
+    if detailed_match:
+        result["detailed"] = detailed_match.group(1).strip()
+    else:
+        # Strategy 2: Opening tag exists but no closing tag
+        detailed_fallback = re.search(r'<detailed>(.*?)(?=<coarse|<thinking|$)', output, re.DOTALL)
+        if detailed_fallback:
+            content = detailed_fallback.group(1).strip()
+            # Take first sentence or until newline
+            result["detailed"] = content.split('\n')[0].strip()
+        else:
+            # Strategy 3: Look for "The {category}" pattern
+            if category:
+                category_pattern = re.search(
+                    rf'(The {re.escape(category)}[^\n]*?(?:\.|$))', 
+                    output, 
+                    re.IGNORECASE
+                )
+                if category_pattern:
+                    result["detailed"] = category_pattern.group(1).strip()
+            else:
+                # Strategy 4: Look for any "The X" pattern
+                the_pattern = re.search(r'(The [A-Za-z]+[^\n]{20,200}?\.)', output)
+                if the_pattern:
+                    result["detailed"] = the_pattern.group(1).strip()
+    
+    # ========== Cleanup ==========
+    # Remove any remaining XML tags
+    result["coarse"] = re.sub(r'</?[^>]+>', '', result["coarse"]).strip()
+    result["detailed"] = re.sub(r'</?[^>]+>', '', result["detailed"]).strip()
+    
+    # Remove extra whitespace
+    result["coarse"] = ' '.join(result["coarse"].split())
+    result["detailed"] = ' '.join(result["detailed"].split())
+    str_result = result['coarse'] + ' ' +result['detailed']
+    return str_result
 
 @dataclass
 class GRPOScriptArguments(ScriptArguments):
@@ -129,58 +216,57 @@ def _call_listener_batch(batch_requests, timeout=LISTENER_TIMEOUT,
         payload = {"batch": chunk}
         attempt = 0
         chunk_success = False
-        while attempt <= max_retries:
-            try:
-                attempt += 1
-                if attempt == 1:
-                    sample = chunk[0] if chunk else None
+        # while attempt <= max_retries:
+            # try:
+                # attempt += 1
+                # if attempt == 1:
+                #     sample = chunk[0] if chunk else None
                     # print(f"[CLIENT] listener call {url} chunk={start}:{end} size={len(chunk)} sample={sample}")
-
-                r = sess.post(url, json=payload, timeout=(connect_timeout, read_timeout))
-                r.raise_for_status()
+        r = sess.post(url, json=payload, timeout=180)
+        r.raise_for_status()
                 # parse JSON
-                try:
-                    resp = r.json()
-                except Exception as e:
-                    print(f"[WARN] listener returned non-json body for chunk {start}:{end}: {e}; body head: {r.text[:400]!r}")
-                    raise
+                # try:
+        resp = r.json()
+                # except Exception as e:
+                #     print(f"[WARN] listener returned non-json body for chunk {start}:{end}: {e}; body head: {r.text[:400]!r}")
+                #     raise
 
                 # expected: {"results":[...], "took":...} or a list
-                if isinstance(resp, dict) and "results" in resp:
-                    res = resp["results"]
-                elif isinstance(resp, list):
-                    res = resp
-                else:
-                    print(f"[WARN] unexpected JSON format for chunk {start}:{end}: {type(resp)}; resp keys: {list(resp.keys()) if isinstance(resp, dict) else 'N/A'}")
-                    res = neutral_resp_slice(chunk)
+        if isinstance(resp, dict) and "results" in resp:
+            res = resp["results"]
+        elif isinstance(resp, list):
+            res = resp
+        else:
+            print(f"[WARN] unexpected JSON format for chunk {start}:{end}: {type(resp)}; resp keys: {list(resp.keys()) if isinstance(resp, dict) else 'N/A'}")
+            res = neutral_resp_slice(chunk)
 
-                # if the listener returned wrong length for this chunk, fallback for safety
-                if not isinstance(res, list) or len(res) != len(chunk):
-                    print(f"[WARN] listener returned {len(res)} results but expected {len(chunk)} for chunk {start}:{end}. Using fallback for this chunk.")
-                    res = neutral_resp_slice(chunk)
+                # # if the listener returned wrong length for this chunk, fallback for safety
+                # if not isinstance(res, list) or len(res) != len(chunk):
+                #     print(f"[WARN] listener returned {len(res)} results but expected {len(chunk)} for chunk {start}:{end}. Using fallback for this chunk.")
+                #     res = neutral_resp_slice(chunk)
 
-                results_all.extend(res)
-                chunk_success = True
-                break  # exit retry loop for this chunk
+        results_all.extend(res)
+                # chunk_success = True
+                # break  # exit retry loop for this chunk
 
-            except requests.exceptions.RequestException as e:
-                print(f"[WARN] listener chunk {start}:{end} request failed attempt={attempt}: {e}")
-                if attempt > max_retries:
-                    print(f"[ERROR] chunk {start}:{end} failed after {max_retries} retries; using neutral fallback")
-                    results_all.extend(neutral_resp_slice(chunk))
-                    break
-                # exponential backoff
-                backoff = backoff_factor * (2 ** (attempt - 1))
-                time.sleep(backoff)
-            except Exception as e:
-                print(f"[WARN] unexpected error calling listener for chunk {start}:{end}: {e}")
-                # fallback and break
-                results_all.extend(neutral_resp_slice(chunk))
-                break
+            # except requests.exceptions.RequestException as e:
+            #     print(f"[WARN] listener chunk {start}:{end} request failed attempt={attempt}: {e}")
+            #     if attempt > max_retries:
+            #         print(f"[ERROR] chunk {start}:{end} failed after {max_retries} retries; using neutral fallback")
+            #         results_all.extend(neutral_resp_slice(chunk))
+            #         break
+            #     # exponential backoff
+            #     backoff = backoff_factor * (2 ** (attempt - 1))
+            #     time.sleep(backoff)
+            # except Exception as e:
+            #     print(f"[WARN] unexpected error calling listener for chunk {start}:{end}: {e}")
+            #     # fallback and break
+            #     results_all.extend(neutral_resp_slice(chunk))
+            #     break
 
         # optional tiny pause to avoid bursts
-        if chunk_delay and (end < total):
-            time.sleep(chunk_delay)
+        # if chunk_delay and (end < total):
+        #     time.sleep(chunk_delay)
 
     # final safety: ensure we return exactly one response per request
     if len(results_all) != total:
@@ -209,18 +295,19 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
     n = len(contents)
 
     path_candidates = kwargs.get('ret_paths')
+    names_list = kwargs.get('names')
     categories = kwargs.get('category')
     if path_candidates is None or categories is None:
         return [0.0] * n
-
     # Build local requests and keys
     local_requests = []      # payloads this rank needs (for gather)
     local_indices = []       # indices into the local batch that correspond to each payload
     local_keys = []          # key for each local example (used to lookup rewards later)
     for i, content in enumerate(contents):
         cat = categories[i]
-        content_clean = extract_answer_content(content)
-        question = f'Does the description -> {content_clean} match the {cat} in the image? Answer in yes or no.'
+        # content_clean = extract_answer_content(content)
+        content_clean = parse_descriptions(content)
+        question = f'Does the description -> "{content_clean}" match the {cat} in the image? Answer in yes or no.'
         candidate_paths = path_candidates[i]
         key = (tuple(candidate_paths), question)
         local_keys.append(key)
@@ -290,6 +377,7 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
     # Now compute rewards locally using the (now-consistent) cache
     rewards = []
     for i, content in enumerate(contents):
+        names = names_list[i]
         key = local_keys[i]
         res = _listener_cache.get(key, None)
         print(f"[RESULTS] -> {res}")
@@ -306,58 +394,86 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
                 except Exception:
                     yes_probs = [0.0] * len(path_candidates[i])
             predicted_index = int(res.get("predicted_index", -1))
-
-        target_index = int(solution[i])
-        reward = 1.0 if (predicted_index == target_index and predicted_index >= 0) else 0.0
+        prediction = names[predicted_index]
+        target = solution[i]
+        reward = 1.0 if (prediction == target and predicted_index >= 0) else 0.0
         rewards.append(reward)
-
         # optional logging
         if logger is not None:
-            content_clean = extract_answer_content(content)
+            # content_clean = extract_answer_content(content)
+            content_clean = parse_descriptions(content)
             logger.log(reward, content_clean, target_index)
 
         # debug file logging (only rank0's LOCAL_RANK==0 writes)
         if os.getenv("DEBUG_MODE", "false").lower() == "true" and os.getenv("LOCAL_RANK", "0") == "0":
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_path = f'debug_files/debug_lewis_rank{os.getenv("LOCAL_RANK", "0")}_job{os.getenv("SLURM_JOB_ID", "unknown")}.txt'
+            log_path = f'debug_files/debug_speaker_{os.getenv("LOCAL_RANK", "0")}_job_{os.getenv("SLURM_JOB_ID", "unknown")}.txt'
             try:
                 with open(log_path, "a", encoding="utf-8") as f:
                     f.write(f"------------- {current_time} | Rank: {os.getenv('LOCAL_RANK', '0')} | Accuracy reward: {reward} -------------\n")
-                    f.write(f"content: {extract_answer_content(content)}\n")
+                    f.write(f"content: {parse_descriptions(content)}\n")
                     f.write(f"sol: {solution[i]}\n")
-                    f.write(f"predicted_index: {predicted_index}, target_index: {target_index}\n")
+                    f.write(f"prediction: {prediction}, target_index: {target}\n")
                     f.flush()
             except Exception as e:
                 if logger is not None:
-                    logger.log(f"Logging error: {e}", extract_answer_content(content), target_index)
+                    logger.log(f"Logging error: {e}", parse_descriptions(content), target_index)
 
     return rewards
 
-
-
 def format_reward(completions, **kwargs):
     """
-    Reward function that checks the format of the MODEL'S RESPONSE,
-    not the entire prompt-response string.
+    Reward function that checks if the model's response contains:
+    1. <thinking>...</thinking> tag (reasoning process)
+    2. <coarse>...</coarse> tag (5-6 word description starting with "A photo of")
+    3. <detailed>...</detailed> tag (detailed distinguishing description)
+    
+    Rewards:
+    - 1.0 if all three tags are present and properly closed
+    - Partial credit options available (see variants below)
     """
-    pattern = r"<think>.*?</think>\s*<answer>.*?</answer>"
+    # Pattern that requires all three tags with proper closing
+    pattern = r"<thinking>.*?</thinking>\s*<coarse>.*?</coarse>\s*<detailed>.*?</detailed>"
+    
     completion_contents = [completion[0]["content"] for completion in completions]
     rewards = []
+    
     for content in completion_contents:
-        # --- FIX: Isolate the assistant's response ---
-        # The model's actual output comes after "assistant\n"
+        # Isolate the assistant's response (comes after "assistant\n")
         parts = content.split('assistant\n')
-        
-        # Take the last part, which is the model's generation
         model_output = parts[-1] if len(parts) > 1 else content
         
-        # Now, check the format on the isolated output
+        # Check if output matches the expected format
         match = re.fullmatch(pattern, model_output.strip(), re.DOTALL)
         
         reward = 1.0 if match else 0.0
         rewards.append(reward)
-
+    
     return rewards
+
+# def format_reward(completions, **kwargs):
+#     """
+#     Reward function that checks the format of the MODEL'S RESPONSE,
+#     not the entire prompt-response string.
+#     """
+#     pattern = r"<think>.*?</think>\s*<answer>.*?</answer>"
+#     completion_contents = [completion[0]["content"] for completion in completions]
+#     rewards = []
+#     for content in completion_contents:
+#         # --- FIX: Isolate the assistant's response ---
+#         # The model's actual output comes after "assistant\n"
+#         parts = content.split('assistant\n')
+        
+#         # Take the last part, which is the model's generation
+#         model_output = parts[-1] if len(parts) > 1 else content
+        
+#         # Now, check the format on the isolated output
+#         match = re.fullmatch(pattern, model_output.strip(), re.DOTALL)
+        
+#         reward = 1.0 if match else 0.0
+#         rewards.append(reward)
+
+#     return rewards
 
 def length_reward(completions, logger=None, **kwargs):
     """
@@ -474,20 +590,21 @@ def main(script_args, training_args, model_args):
     trainer_cls = Qwen2VLGRPOTrainer if not training_args.use_vllm else Qwen2VLGRPOVLLMTrainer
     print("using: ", trainer_cls)
     if model_args.use_peft:
+        print("Training in LORA mode")
         from peft import LoraConfig
         peft_config = LoraConfig(
             r=64,  # the rank of the LoRA matrices
-            lora_alpha=16, # the weight
-            lora_dropout=0.1, # dropout to add to the LoRA layers
+            lora_alpha=1128, # the weight
+            lora_dropout=0.01, # dropout to add to the LoRA layers
             bias="none", # add bias to the nn.Linear layers?
             task_type="CAUSAL_LM",
-            target_modules=["q_proj", "k_proj","v_proj","o_proj"], # the name of the layers to add LoRA
+            target_modules="all-linear", # the name of the layers to add LoRA
             modules_to_save=None, # layers to unfreeze and train from the original pre-trained model
         )
     else:
         peft_config = None
-    global listener_model
-    listener_model = None
+    # global listener_model
+    # listener_model = None
     LISTENER_URL = os.environ.get("LISTENER_URL", "http://127.0.0.1:9000/batch_score")
     trainer = trainer_cls(
         model=model_args.model_name_or_path,

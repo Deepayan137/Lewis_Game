@@ -73,7 +73,7 @@ def _call_speaker_batch(batch_requests, timeout=SPEAKER_TIMEOUT,
                     sample = chunk[0] if chunk else None
                     # print(f"[CLIENT] listener call {url} chunk={start}:{end} size={len(chunk)} sample={sample}")
 
-                r = sess.post(url, json=payload, timeout=(connect_timeout, read_timeout))
+                r = sess.post(url, json=payload, timeout=180)
                 r.raise_for_status()
                 # parse JSON
                 try:
@@ -232,7 +232,7 @@ def format_extra_info(extra_info: dict[str, str]) -> str:
     lines = []
     for i, (name, info) in enumerate(extra_info.items()):
         label = letters[i] if i < len(letters) else f"Option {i+1}"
-        lines.append(f"{label}. Name: {name}, Info: {info}")
+        lines.append(f"Name: {name}, Info: {info}")
     return "\n".join(lines)
 
 def modify_prompt(inputs, descriptions):
@@ -253,37 +253,61 @@ def modify_prompt(inputs, descriptions):
 
         info_dict = dict(zip(names, descs))
         info_block = format_extra_info(info_dict)
-
+        answer_format = {}
+        answer_format.update({
+            "Reasoning": "<Brief justification>",
+            "Answer": f"<one of {names}>",
+        })
         category = inp.get("category", "object")
-        letters = [string.ascii_uppercase[i] for i in range(n)]
-        test_question = (
-            f"Which description matches the {category} in the image? "
-            f"Choose the correct option from A, B, C, D or E."
+        prompt = (
+            f"You are provided with a query image containing a {category} "
+            f"along with the name and detailed distinguishing features of several other {category}s.\n\n"
+            "Below are the name and their descriptions:\n"
+            f"{info_block}\n\n"
+            "Your Task:\n"
+            f"1. Generate an attribute-focused description of the {category} in the query image. "
+            "Focus on its distinguishing features rather than superficial details such as background, pose, lighting, clothes or accessories.\n"
+            f"2. Compare your generated description of the query image with the provided descriptions of the other {category}s.\n"
+            f"3. Identify the name of the {category} in the query image from the best match.\n\n"
+            "Output Requirements:\n"
+            f"- Your response MUST be a valid JSON exactly matching the format:\n{json.dumps(answer_format)}\n"
+            "- Do not include any extra text, explanations, or formatting outside of the JSON.\n"
         )
+        # letters = [string.ascii_uppercase[i] for i in range(n)]
+        # test_question = (
+        #     f"Which description matches the {category} in the image? "
+        #     f"Answer in {', '.join([chr(65 + i) for i in range(n)])}."
+        # )
         # answer_format = {chr(65 + i): f"[Matching attributes for option {chr(65 + i)}]" for i in range(len(names))}
-        # answer_format = {}
         # answer_format.update({
         #     "Reasoning": "<Brief justification>",
         #     "Answer": f"<one of {letters}>",
         # })
-        prompt = (
-            "You are a helpful AI agent specializing in image analysis and object recognition.\n"
-            "You are provided with a query image along with detailed description(s) of one or several objects.\n\n"
-            "Below are the description(s):\n"
-            f"{info_block}\n\n"
-            "Your Task:\n"
-            f"- Compare the query image with each description and answer the question:\n{test_question}\n"
-            "- Ignore superficial details (clothing, accessories, pose, background). Focus on non-variant/permanent features "
-            "(e.g., color, shape, pattern, text for objects/buildings; facial features for people).\n"
-            # "- List shared attributes between the image and each description very concisely (≤5 words).\n"
-            # "- Provide a brief reasoning for your final answer."
-            # "- Think briefly before generating your final answer.\n"
-            f"- Output the thinking process in <think> </think> and final answer in <answer> </answer> tags.\nThe output answer format should be as follows:\n<think> ... </thnk> <answer> ... </answer>\nPlease strictly follow the format."
-            # "- Respond strictly in the following JSON format:\n"
-            # f"{json.dumps(answer_format, indent=2)}\n"
-            # "Any deviation from this format will be considered incorrect. Do not output any additional text."
-        )
-
+        # prompt = (
+        #     "You are a helpful AI agent specializing in image analysis and object recognition.\n"
+        #     "You are provided with a query image along with detailed description(s) of one or several objects.\n\n"
+        #     "Below are the description(s):\n"
+        #     f"{info_block}\n\n"
+        #     "Your Task:\n"
+        #     f"- Compare the query image with each description and answer the question:\n{test_question}\n"
+        #     "- Ignore superficial details (clothing, accessories, pose, background). Focus on non-variant/permanent features "
+        #     "(e.g., color, shape, pattern, text for objects/buildings; facial features for people).\n"
+        #     f"- Output the thinking process in <think> </think> and final answer (one of A, B, C, D or E) in <answer> </answer> tags.\nThe output answer format should be as follows:\n<think> ... </thnk> <answer> ... </answer>\nPlease strictly follow the format."
+        # )
+        # prompt = (
+        #     "You are a helpful AI agent specializing in image analysis and object recognition\n"
+        #     "Your task is to analyze a query image and compare it with the provided descriptions.\n"
+        #     "Below are the description(s):\n"
+        #     f"{info_block}\n\n"
+        #     "Your Task:\n"
+        #     f"- Compare the query image with each description and answer the following question:\n{test_question}\n"
+        #     "- **Ignore superficial details** such as clothing, accessories, pose variations, or surrounding elements (e.g., people in the background). Focus only on non-variant/permanent features such as color, shape, pattern, text for objects/buildings and facial features for people."
+        #     "- List shared attributes between the image and each description very concisely (at max 5 words).\n"
+        #     "- Provide a brief reasoning for your final answer.\n"
+        #     "- Respond strictly in the following JSON format:\n"
+        #     f"{json.dumps(answer_format, indent=2)}\n"
+        #     "Any deviation from this format will be considered incorrect. Do not output any additional text."
+        # )
         # Attach chat-style prompt. Fill the image value upstream if needed.
         inp = dict(inp)  # shallow copy so we don't mutate the original
         inp["prompt"] = [
