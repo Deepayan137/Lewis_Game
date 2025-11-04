@@ -284,16 +284,15 @@ class HierarchicalClipRetriever():
                 return part
         return None
     
-    def create_training_batch(self, query_image_path, remaining_paths, category, num_distractors=4, random_negative=False):
+    def create_training_batch(self, query_image_path, remaining_paths, category, num_distractors=4, random_negative=False, selection_strategy='most_similar'):
         """
         Create a complete training batch for Lewis game
         Returns query path, distractor paths, and target index (always 0)
         """
         if self.with_negative:
-            selection_strategy = 'most_similar' if os.path.basename(self.data_dir) == 'PerVA' else 'random'
             distractors = self.hierarchical_distractor_sampling_with_negatives(query_image_path, num_distractors, selection_strategy=selection_strategy)
         else:
-            distractors = self.hierarchical_distractor_sampling(query_image_path, num_distractors)
+            distractors = self.hierarchical_distractor_sampling(query_image_path, num_distractors, selection_strategy=selection_strategy)
 
         try:
             new_query_image_path = self.get_alternate_query(query_image_path, remaining_paths, random_negative=random_negative)
@@ -326,6 +325,7 @@ def main():
     parser.add_argument('--with_negative', action='store_true', default=False, help='use negatives sourced from LAION')
     args = parser.parse_args()
     # seed = int(args.catalog_file.split('_')[-1].split('.')[0])
+    args.dataset = os.path.basename(args.out_dir)
     seed = args.seed
     catalog_path = os.path.join(args.root, args.catalog_file)
     with open(catalog_path, 'r') as f:
@@ -353,16 +353,34 @@ def main():
         print("Loading Index")
         retriever._load_hierarchical_index(category, seed)
     concept_list = []
+    
     for concept in tqdm(concepts):
-        for image_path in data[category][concept][args.split]:
+        selection_strategy = 'most_similar'
+        image_paths = data[category][concept][args.split]
+        # if args.dataset == 'PerVA' and len(image_paths) > 5:
+        #     image_paths = random.sample(image_paths, 5)
+        for image_path in image_paths:
             remaining_paths = [item for item in data[category][concept][args.split] if item != image_path]
-            batch = retriever.create_training_batch(image_path, remaining_paths, category, num_distractors=args.distractors, random_negative=args.random_negative)
+            batch = retriever.create_training_batch(image_path, remaining_paths, category, num_distractors=args.distractors, 
+            random_negative=args.random_negative, selection_strategy=selection_strategy)
             concept_list.append({
                 "query_path":batch['query_path'],
                 "ret_paths":batch['image_paths'],
                 'label':batch['target_index'],
                 'category':batch['category'],
             })
+        # if args.dataset == 'MyVLM':
+        #     selection_strategy = 'random'
+        #     for image_path in data[category][concept][args.split]:
+        #         remaining_paths = [item for item in data[category][concept][args.split] if item != image_path]
+        #         batch = retriever.create_training_batch(image_path, remaining_paths, category, num_distractors=args.distractors, 
+        #         random_negative=args.random_negative, selection_strategy=selection_strategy)
+        #         concept_list.append({
+        #             "query_path":batch['query_path'],
+        #             "ret_paths":batch['image_paths'],
+        #             'label':batch['target_index'],
+        #             'category':batch['category'],
+        #         })
     
     K = args.distractors + 1
     save_file = f'retrieval_top{K}_with_negative.json' if with_negative else f'retrieval_top{K}.json'

@@ -9,21 +9,6 @@ import logging
 
 def setup_model(model_name_or_path, use_peft=False, device="cuda"):
     logging.info("Loading model...")
-    # if model_name_or_path == "Qwen/Qwen3-8B":
-    #     processor = AutoTokenizer.from_pretrained(model_name_or_path)
-    #     model = AutoModelForCausalLM.from_pretrained(
-    #             model_name_or_path,
-    #             torch_dtype="auto",
-    #             device_map="auto")
-    # if model_name_or_path == "openbmb/MiniCPM-o-2_6":
-    #     model = AutoModel.from_pretrained(
-    #         model_name_or_path,
-    #         attn_implementation="flash_attention_2",
-    #         torch_dtype=torch.float16,
-    #         device_map="auto",
-    #         trust_remote_code=True)
-    #     processor = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
-    # else:
     """
     Setup the Qwen 2.5 VL model and processor with optimizations.
     """
@@ -66,77 +51,77 @@ def speaker_describes_batch(model, processor, images, problems, max_new_tokens=1
     
     # Process ONE image at a time
     for image, problem in zip(images, problems):
-        if 'Qwen' in model.name_or_path:
-            messages = [{
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": problem},
-                ],
-            }]
-            
-            from qwen_vl_utils import process_vision_info
-            
-            text = processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            image_inputs, video_inputs = process_vision_info(messages)
-            
-            # Single image input
-            inputs = processor(
-                text=[text],
-                images=image_inputs if image_inputs else None,
-                videos=video_inputs if video_inputs else None,
-                padding=True,
-                return_tensors="pt",
-            )
-            
-            device = next(model.parameters()).device
-            inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
-            if num_return_sequences > 1:
-                gen_kwargs = {
-                    "max_new_tokens": max_new_tokens,
-                    "do_sample": False,
-                    "num_beams":num_return_sequences * 2,
-                    "num_beam_groups": num_return_sequences,
-                    "diversity_penalty":1.0,
-                    "num_return_sequences": num_return_sequences,
-                    "pad_token_id": processor.tokenizer.eos_token_id,
-                }
-            else:
-                gen_kwargs = {
-                    "max_new_tokens":max_new_tokens,
-                    "do_sample":True,
-                    "temperature":0.7,
-                    "top_p":0.9,
-                    "num_return_sequences":num_return_sequences,  # Multiple sequences for THIS image
-                    "pad_token_id":processor.tokenizer.eos_token_id,
-                }
-            with torch.no_grad():
-                generated_ids = model.generate(
-                    **inputs,
-                    **gen_kwargs
-                )
-            
-            # Decode
-            input_len = inputs["input_ids"].shape[1]
-            generated_ids_trimmed = generated_ids[:, input_len:]
-            
-            output_texts = processor.batch_decode(
-                generated_ids_trimmed,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False
-            )
-            
-            all_outputs.append(output_texts)  # Add all sequences from this image            # Clean up immediately
-            del inputs, generated_ids, generated_ids_trimmed
-            torch.cuda.empty_cache()
+        # if 'Qwen' in model.name_or_path:
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": problem},
+            ],
+        }]
         
-        elif 'MiniCPM' in model.name_or_path:
-            # Handle MiniCPM
-            messages = [{'role': 'user', 'content': [image, problem]}]
-            _, output_texts = model.chat(msgs=[messages], tokenizer=processor)
-            all_outputs.append(output_texts)
+        from qwen_vl_utils import process_vision_info
+        
+        text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        image_inputs, video_inputs = process_vision_info(messages)
+        
+        # Single image input
+        inputs = processor(
+            text=[text],
+            images=image_inputs if image_inputs else None,
+            videos=video_inputs if video_inputs else None,
+            padding=True,
+            return_tensors="pt",
+        )
+        
+        device = next(model.parameters()).device
+        inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        if num_return_sequences > 1:
+            gen_kwargs = {
+                "max_new_tokens": max_new_tokens,
+                "do_sample": False,
+                "num_beams":num_return_sequences * 2,
+                "num_beam_groups": num_return_sequences,
+                "diversity_penalty":1.0,
+                "num_return_sequences": num_return_sequences,
+                "pad_token_id": processor.tokenizer.eos_token_id,
+            }
+        else:
+            gen_kwargs = {
+                "max_new_tokens":max_new_tokens,
+                "do_sample":True,
+                "temperature":0.7,
+                "top_p":0.9,
+                "num_return_sequences":num_return_sequences,  # Multiple sequences for THIS image
+                "pad_token_id":processor.tokenizer.eos_token_id,
+            }
+        with torch.no_grad():
+            generated_ids = model.generate(
+                **inputs,
+                **gen_kwargs
+            )
+        
+        # Decode
+        input_len = inputs["input_ids"].shape[1]
+        generated_ids_trimmed = generated_ids[:, input_len:]
+        
+        output_texts = processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False
+        )
+        
+        all_outputs.append(output_texts)  # Add all sequences from this image            # Clean up immediately
+        del inputs, generated_ids, generated_ids_trimmed
+        torch.cuda.empty_cache()
+        
+        # elif 'MiniCPM' in model.name_or_path:
+        #     # Handle MiniCPM
+        #     messages = [{'role': 'user', 'content': [image, problem]}]
+        #     _, output_texts = model.chat(msgs=[messages], tokenizer=processor)
+        #     all_outputs.append(output_texts)
     
     return all_outputs
 

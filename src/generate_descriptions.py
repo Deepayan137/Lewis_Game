@@ -148,17 +148,17 @@ def main():
     elif args.model_type == 'original_7b':
         model_path = "Qwen/Qwen2-VL-7B-Instruct"
     elif args.model_type == "finetuned_2b":
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.data_name}_{args.category}_train_seed_{args.seed}"
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.data_name}_all_train_seed_{args.seed}"
     elif args.model_type == 'finetuned_7b':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_{args.data_name}_{args.category}_train_seed_{args.seed}"
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_{args.data_name}_all_train_seed_{args.seed}"
     elif args.model_type == 'lora_finetuned_2b_with_neg':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_with_neg_SPEAKER_{args.data_name}_{args.category}_train_seed_{args.seed}"
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_SPEAKER_{args.data_name}_all_train_seed_{args.seed}_with_neg"
     elif args.model_type == 'lora_finetuned_7b_with_neg':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_with_neg_SPEAKER_{args.data_name}_{args.category}_train_seed_{args.seed}"
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_{args.data_name}_all_train_seed_{args.seed}_with_neg/"
     elif args.model_type == 'lora_finetuned_7b':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_{args.data_name}_{args.category}_train_seed_{args.seed}_lr"
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}"
     elif args.model_type == 'lora_finetuned_2b':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_SPEAKER_{args.data_name}_{args.category}_train_seed_{args.seed}"
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}"
     LOG.info("Loading model from %s", model_path)
     start_time = time.time()
     use_peft = False

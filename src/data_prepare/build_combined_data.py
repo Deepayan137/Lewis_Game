@@ -87,7 +87,7 @@ def create_sampled_combined_splits(
             n_orig_test = len(orig_test)
             n_to_sample = math.floor(test_sample_frac * n_orig_test)
             # Bound by max_test_images
-            n_to_sample = min(n_to_sample, max_test_images)
+            # n_to_sample = min(n_to_sample, max_test_images)
             # If fraction=1 but n_to_sample==0 because floor -> allow at least 1 if orig_test>0 and test_sample_frac>0
             if test_sample_frac > 0 and n_to_sample == 0 and n_orig_test > 0:
                 n_to_sample = 1
@@ -101,8 +101,8 @@ def create_sampled_combined_splits(
 
             # Keep train unchanged; test becomes sampled subset (may be empty)
             train_combined[category][cname] = {
-                "train": orig_train,
-                "test": sampled,
+                "train": orig_train+sampled,
+                "test": [],
             }
             cat_meta["sampled_test_images_by_concept"][cname] = {
                 "n_original_test": n_orig_test,
@@ -132,9 +132,11 @@ def summarize_split(data: Dict[str, Any]) -> Tuple[int, int, int]:
     total_concepts = 0
     total_train_images = 0
     total_test_images = 0
+    categories = []
     for category, concepts in data.items():
         if not isinstance(concepts, dict):
             continue
+        categories.append(category)
         total_concepts += len(concepts)
         for cname, splits in concepts.items():
             total_train_images += len(splits.get("train", []))
@@ -147,9 +149,9 @@ def main():
     parser.add_argument("--input_json", type=str, required=True, help="Path to original dataset JSON")
     parser.add_argument("--out_dir", type=str, default=".", help="Output directory")
     parser.add_argument("--concept_frac", type=float, default=0.20, help="Fraction of concepts to select for large categories")
-    parser.add_argument("--min_concepts_threshold", type=int, default=10, help="Apply selection only to categories with at least this many concepts")
+    parser.add_argument("--min_concepts_threshold", type=int, default=8, help="Apply selection only to categories with at least this many concepts")
     parser.add_argument("--test_sample_frac", type=float, default=1., help="Fraction (0-1) of original test images to include per selected concept in train_combined")
-    parser.add_argument("--max_test_images", type=int, default=10, help="Hard cap on sampled test images per selected concept")
+    parser.add_argument("--max_test_images", type=int, default=100, help="Hard cap on sampled test images per selected concept")
     parser.add_argument("--seed", type=int, default=23, help="Random seed for deterministic selection/sampling")
     args = parser.parse_args()
 
@@ -182,6 +184,7 @@ def main():
 
     print("\n=== Output summary ===")
     print(f"Train combined file: {train_name}")
+    print(f"  Catgories: {[c for c in train_combined.keys() if train_combined[c]]}")
     print(f"  Categories with selected concepts: {len([c for c in train_combined.keys() if train_combined[c]])}")
     print(f"  Selected (train) concepts total: {train_concepts}")
     print(f"  Train images in train_combined (copied from original train lists): {train_tcount}")

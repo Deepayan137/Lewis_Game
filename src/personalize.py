@@ -179,10 +179,19 @@ def prepare_test_retrieval_items(
             if not descriptions:
                 descriptions = ["No description available."]
             if args.data_name == "YoLLaVA":
-                category_dict = yollava_reverse_category_dict
+                category = yollava_reverse_category_dict[query_name]
             elif args.data_name == "MyVLM":
-                category_dict = myvlm_reverse_category_dict
-            prompt = get_prompt(descriptions, category_dict[query_name], names, query_desc)
+                category = myvlm_reverse_category_dict[query_name]
+            elif args.data_name == 'PerVA':
+                category_dict = {
+                    'veg': 'vegetable',
+                    'decoration': 'decoration object',
+                    'retail': 'retail object',
+                    'tro_bag': 'trolley bag',
+                }
+                concept_name = query_path.split('/')[-2]
+                category = category_dict.get(concept_name, concept_name)
+            prompt = get_prompt(descriptions, category, names, query_desc)
             items.append(
                 {
                     "path": query_path,
@@ -277,7 +286,7 @@ def run_inference_loop(
                 pred_names.append("")
 
         for path, gt, sol_desc, rp, resp, pred, lt2nm in zip(paths, gt_names, sol_descs, ret_paths, responses, pred_names, letter2names):
-            pred_name = lt2nm[pred]
+            pred_name = lt2nm[pred] if pred in lt2nm else pred
             is_correct = int(pred_name.lower() == gt.lower())
             # is_correct = gt.lower() in pred.lower()
             correct_count += is_correct
@@ -362,7 +371,8 @@ def main():
         'base_qwen_2b': "Qwen/Qwen2-VL-2B-Instruct",
         ('ft_qwen_2b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
         ('ft_qwen_7b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
-        ('lora_qwen_7b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
+        # ('lora_qwen_7b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
+        ('lora_qwen_7b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_LISTENER_PerVA_all_train_seed_42_K_3_base_7b",
         ('lora_qwen_7b_with_neg', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_with_neg_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
         ('lora_qwen_2b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3"    
     }
@@ -389,7 +399,7 @@ def main():
     # save results & stats
     outdir = Path(args.output_dir) / args.data_name / args.category
     if args.concept_name != '':
-        outdir = Path(outdir) / 'concepts' / args.concept_name / f'seed_{str(args.seed)}'
+        outdir = Path(outdir) / args.concept_name / f'seed_{str(args.seed)}'
     outdir.mkdir(parents=True, exist_ok=True)
     outpath = outdir / f"results_model_{args.model_type}_db_{args.db_type}_k_{args.k_retrieval}.json"
     output = {
