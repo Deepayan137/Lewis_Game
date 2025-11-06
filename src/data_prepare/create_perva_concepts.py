@@ -13,11 +13,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     seed = args.seed
 
-    catalog_file = os.path.join(f'manifests/PerVA/train_combined_seed_{args.seed}.json')
+    catalog_file = os.path.join(f'manifests/PerVA/test_combined_seed_{args.seed}.json')
     data = read_json_file(catalog_file)
     
     for key in data.keys():
         for concept in data[key].keys():
-            with open(f'OSC_train_subset_seed_{seed}.txt', 'a') as f:
+            with open(f'OSC_subset_seed_{seed}.txt', 'a') as f:
                 f.write(f'{key},{concept}\n')
     

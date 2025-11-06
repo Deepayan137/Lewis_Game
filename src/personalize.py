@@ -80,21 +80,21 @@ def get_prompt(descriptions: Sequence[str], category: str,  names, query_desc=""
     
     return prompt
 
-def generate_query_description(args, data_loader):
-    if args.db_type == 'original':
-        model_path = "Qwen/Qwen2-VL-2B-Instruct"
-    else:
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.category}_test_subset"
-    speaker_model, processor = setup_model(model_path)
-    raw_results = run_description_generation(
-        speaker_model,
-        processor,
-        data_loader)
-    query_descs = []
-    for name, desc in raw_results:
-        desc_clean = extract_speaker_answer_term(desc)
-        query_descs.append(desc_clean)
-    return query_descs
+# def generate_query_description(args, data_loader):
+#     if args.db_type == 'original':
+#         model_path = "Qwen/Qwen2-VL-2B-Instruct"
+#     else:
+#         model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2-VL-2B-Instruct_GRPO_lewis_{args.category}_test_subset"
+#     speaker_model, processor = setup_model(model_path)
+#     raw_results = run_description_generation(
+#         speaker_model,
+#         processor,
+#         data_loader)
+#     query_descs = []
+#     for name, desc in raw_results:
+#         desc_clean = extract_speaker_answer_term(desc)
+#         query_descs.append(desc_clean)
+#     return query_descs
 
 def prepare_test_retrieval_items(
     args,
@@ -133,8 +133,8 @@ def prepare_test_retrieval_items(
         data_loader = create_data_loader(dataset, batch_size=args.batch_size)
         query_descs = []
         # generate query descriptions
-        if use_query_desc:
-            query_descs = generate_query_description(args, data_loader)
+        # if use_query_desc:
+        #     query_descs = generate_query_description(args, data_loader)
         # load description dictionary produced earlier by description generation step
         with description_json.open("r", encoding="utf-8") as fh:
             desc_lookup: Dict[str, str] = json.load(fh)
@@ -213,6 +213,7 @@ def run_inference_loop(
     model,
     processor,
     items: Iterable[Dict[str, Any]],
+    temperature: float = 1e-6,
     batch_size: int = 8,
     max_new_tokens: int = 128,
     device: torch.device | None = None,
@@ -252,7 +253,7 @@ def run_inference_loop(
         ret_paths = [it.get("ret_path", []) for it in batch]
         letter2names = [it.get("letter2name", []) for it in batch]
         try:
-            responses = speaker_describes_batch(model, processor, images, problems, max_new_tokens=max_new_tokens)
+            responses = speaker_describes_batch(model, processor, images, problems, temperature=temperature, max_new_tokens=max_new_tokens)
         except Exception:
             LOG.exception("Failed generating model responses for current batch; skipping.")
             # append placeholders for each item in batch and continue
@@ -319,11 +320,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--category", type=str, default="all")
     parser.add_argument("--concept_name", type=str, default="bo")
     parser.add_argument("--seed", type=int, default=23)
-    parser.add_argument("--db_type", type=str, default="original", choices=["original_2b", "original_7b", "finetuned_2b", 'finetuned_7b', 'lora_finetuned_2b', 'lora_finetuned_2b_with_neg', 'lora_finetuned_7b', 'lora_finetuned_7b_with_neg'])
-    parser.add_argument("--model_type", type=str, default="base_qwen", choices=["base_qwen_7b", "ft_qwen_7b", "base_qwen_2b", "ft_qwen_2b", "lora_qwen_2b", "lora_qwen_7b", "lora_qwen_7b_with_neg"])
-    parser.add_argument("--model_path", type=str, default="Qwen/Qwen2-VL-7B-Instruct")
+    parser.add_argument("--db_type", type=str, default="original_7b")
+    parser.add_argument("--model_type", type=str, default="original_7b")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_new_tokens", type=int, default=128)
+    parser.add_argument("--temperature", type=float, default=1e-6,
+                       help='generation temperature')
     parser.add_argument("--k_retrieval", type=int, default=3)
     parser.add_argument("--output_dir", type=str, default="results")
     return parser.parse_args()
@@ -367,24 +369,20 @@ def main():
         items = [item for item in items if item.get("solution") == args.concept_name]
     # load model
     model_paths = {
-        'base_qwen_7b': "Qwen/Qwen2-VL-7B-Instruct",
-        'base_qwen_2b': "Qwen/Qwen2-VL-2B-Instruct",
-        ('ft_qwen_2b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
-        ('ft_qwen_7b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
-        # ('lora_qwen_7b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
-        ('lora_qwen_7b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_LISTENER_PerVA_all_train_seed_42_K_3_base_7b",
-        ('lora_qwen_7b_with_neg', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_with_neg_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3",
-        ('lora_qwen_2b', 3): f"../Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_LISTENER_{args.data_name}_all_train_seed_{args.seed}_K_3"    
+        'original_2b': "Qwen/Qwen2-VL-2B-Instruct",
+        'original_7b': "Qwen/Qwen2-VL-7B-Instruct",
+        # 'lora_finetuned_3b_base': f"../Visual-RFT/share_models/Qwen2.5-VL-3B-Instruct_GRPO_lewis_LoRA_LISTENER_PerVA_all_train_seed_{args.seed}_K_3_base_3b",
+        # 'lora_finetuned_7b_base': f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_LISTENER_PerVA_all_train_seed_{args.seed}_K_3_base_7b"    
     }
 
-    if args.model_type in ['base_qwen_7b', 'base_qwen_2b']:
+    if args.model_type in ['original_2b', 'original_7b']:
         model_path = model_paths[args.model_type]
     else:
         model_path = model_paths.get((args.model_type, args.k_retrieval))
         # model_path = f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LISTENER_prompt2_epoch2_YoLLaVA_all_train_seed_23"
     LOG.info("Loading model from %s", model_path)
     use_peft = False
-    if args.model_type.startswith('lora_qwen'):
+    if args.model_type.startswith('lora_finetuned'):
         use_peft = True
     model, processor = setup_model(model_path, use_peft=use_peft)
     # run inference
@@ -392,6 +390,7 @@ def main():
         model,
         processor,
         items,
+        temperature=args.temperature,
         batch_size=args.batch_size,
         max_new_tokens=args.max_new_tokens,
     )

@@ -31,7 +31,7 @@ from tqdm import tqdm
 from inference_utils.dataset import *
 from inference_utils.model import *
 from inference_utils.cleanup import extract_speaker_answer_term, parse_descriptions
-from defined import yollava_reverse_category_dict, myvlm_reverse_category_dict
+from defined import yollava_reverse_category_dict, myvlm_reverse_category_dict, dbooth_reverse_category_dict
 LOG = logging.getLogger(__name__)
 
 
@@ -40,7 +40,8 @@ def process_batch_efficiently(
     processor,
     batch_items: List[Dict[str, Any]],
     max_new_tokens: int = 128,
-    num_return_sequences: int = 1
+    num_return_sequences: int = 1,
+    temperature: float = 1e-6
 ) -> List[Tuple[str, str]]:
     """
     Efficiently describe a batch of items using the speaker model.
@@ -61,10 +62,10 @@ def process_batch_efficiently(
             processor,
             images,
             problems,
+            temperature=temperature,
             max_new_tokens=max_new_tokens,
             num_return_sequences=num_return_sequences
         )
-
     # If single response returned, normalize to list
     if isinstance(contents, str):
         contents = [contents]
@@ -76,6 +77,7 @@ def run_description_generation(
     speaker_model,
     processor,
     data_loader: Iterable,
+    temperature: float = 1e-6,
     max_new_tokens: int = 128,
     num_return_sequences: int = 1,
     log_every: int = 5,
@@ -90,6 +92,7 @@ def run_description_generation(
                 speaker_model,
                 processor,
                 batch_items,
+                temperature=temperature,
                 max_new_tokens=max_new_tokens,
                 num_return_sequences=num_return_sequences
             )
@@ -122,14 +125,16 @@ def parse_args() -> argparse.Namespace:
                        help="Path to the catalog JSON file")
     parser.add_argument("--category", type=str, default='clothe',
                        help='Model category')
-    parser.add_argument("--model_type", type=str, default='original', choices=['original_2b', 'original_7b', 'finetuned_2b', 'finetuned_7b', 'lora_finetuned_2b', 'lora_finetuned_7b', 'lora_finetuned_2b_with_neg', 'lora_finetuned_7b_with_neg'],
+    parser.add_argument("--model_type", type=str, default='original', choices=['original_3b', 'original_7b', 'lora_finetuned_3b', 'lora_finetuned_7b'],
                        help='Model type: original or finetuned')
     parser.add_argument("--seed", type=int, default=42,
                        help='random seed')
     parser.add_argument("--batch_size", type=int, default=4,
                        help='Batch size for processing')
-    parser.add_argument("--max_new_tokens", type=int, default=150,
+    parser.add_argument("--max_new_tokens", type=int, default=128,
                        help='max tokens')
+    parser.add_argument("--temperature", type=float, default=1e-6,
+                       help='generation temperature')
     parser.add_argument("--num_return_sequences", type=int, default=1,
                        help='max tokens')
     parser.add_argument("--output_dir", type=str, default='outputs',
@@ -147,22 +152,14 @@ def main():
         model_path = "Qwen/Qwen2-VL-2B-Instruct"
     elif args.model_type == 'original_7b':
         model_path = "Qwen/Qwen2-VL-7B-Instruct"
-    elif args.model_type == "finetuned_2b":
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{args.data_name}_all_train_seed_{args.seed}"
-    elif args.model_type == 'finetuned_7b':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_{args.data_name}_all_train_seed_{args.seed}"
-    elif args.model_type == 'lora_finetuned_2b_with_neg':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_SPEAKER_{args.data_name}_all_train_seed_{args.seed}_with_neg"
-    elif args.model_type == 'lora_finetuned_7b_with_neg':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_{args.data_name}_all_train_seed_{args.seed}_with_neg/"
-    elif args.model_type == 'lora_finetuned_7b':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}"
     elif args.model_type == 'lora_finetuned_2b':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}"
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2-VL-2B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}"
+    elif args.model_type == 'lora_finetuned_7b':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}"
     LOG.info("Loading model from %s", model_path)
     start_time = time.time()
     use_peft = False
-    if args.model_type.startswith('lora_finetuned_7b'):
+    if args.model_type.startswith('lora_finetuned_7b') or args.model_type.startswith('lora_finetuned_2b'):
         use_peft = True
     speaker_model, processor = setup_model(model_path, use_peft=use_peft)
     LOG.info("Model loaded in %.1f s", time.time() - start_time)
@@ -177,12 +174,12 @@ def main():
         data_name=args.data_name
     )
     data_loader = create_data_loader(dataset, batch_size=args.batch_size)
-
     # Run the now-importable generation function
     raw_results = run_description_generation(
         speaker_model,
         processor,
         data_loader,
+        temperature=args.temperature,
         max_new_tokens=args.max_new_tokens,
         num_return_sequences=args.num_return_sequences,
         log_every=5,
@@ -198,6 +195,8 @@ def main():
             category = yollava_reverse_category_dict[name]
         elif args.data_name == "MyVLM":
             category = myvlm_reverse_category_dict[name]
+        elif args.data_name == 'DreamBooth':
+            category = dbooth_reverse_category_dict[name]
         else:
             category = args.category
         if args.num_return_sequences > 1:

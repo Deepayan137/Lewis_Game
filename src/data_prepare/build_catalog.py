@@ -100,7 +100,7 @@ def build_catalog_by_splitting(data_root: Path, relative: bool, train_fraction: 
             k = 1
             shuffled = images.copy()
             random.shuffle(shuffled)
-            train_list = shuffled[:k]
+            train_list =  shuffled[:k]
             test_list = shuffled[k:]
             catalog[cat][concept] = {"train": train_list, "test": test_list}
 

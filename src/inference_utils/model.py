@@ -12,33 +12,47 @@ def setup_model(model_name_or_path, use_peft=False, device="cuda"):
     """
     Setup the Qwen 2.5 VL model and processor with optimizations.
     """
-    from transformers import Qwen2VLForConditionalGeneration
+    from transformers import Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration
     processor = AutoProcessor.from_pretrained(model_name_or_path)
     if use_peft:
         from peft import PeftConfig, PeftModel
         config = PeftConfig.from_pretrained(model_name_or_path)
         print("Loading LoRA model from {}".format(model_name_or_path))
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            config.base_model_name_or_path,
-            torch_dtype=torch.float16,
-            attn_implementation="flash_attention_2",
-            device_map="auto",)
+        if 'Qwen/Qwen2-VL' in model_name_or_path:
+            model = Qwen2VLForConditionalGeneration.from_pretrained(
+                model_name_or_path,
+                torch_dtype=torch.float16,
+                attn_implementation="flash_attention_2",
+                device_map="auto",)
+        elif 'Qwen/Qwen2-VL' in model_name_or_path:
+            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                model_name_or_path,
+                torch_dtype=torch.float16,
+                attn_implementation="flash_attention_2",
+                device_map="auto",)
         model = PeftModel.from_pretrained(model, model_name_or_path)
     else:
         logging.info(f"Loading model from {model_name_or_path}")  
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
+        if 'Qwen/Qwen2-VL' in model_name_or_path:
+            model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_name_or_path,
             torch_dtype=torch.float16,
             attn_implementation="flash_attention_2",
-            device_map="auto"  # Let it automatically distribute
-        )  
+            device_map="auto",)
+        elif 'Qwen/Qwen2.5-VL' in model_name_or_path:
+            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                model_name_or_path,
+                torch_dtype=torch.float16,
+                attn_implementation="flash_attention_2",
+                device_map="auto"  # Let it automatically distribute
+            )
     model.eval()
     for param in model.parameters():
         param.requires_grad = False
         
     return model, processor
 
-def speaker_describes_batch(model, processor, images, problems, max_new_tokens=128, num_return_sequences=1):
+def speaker_describes_batch(model, processor, images, problems, temperature=1e-6, max_new_tokens=128, num_return_sequences=1):
     """
     Process images one at a time with multiple generations per image to avoid OOM.
     """
@@ -78,25 +92,14 @@ def speaker_describes_batch(model, processor, images, problems, max_new_tokens=1
         
         device = next(model.parameters()).device
         inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
-        if num_return_sequences > 1:
-            gen_kwargs = {
-                "max_new_tokens": max_new_tokens,
-                "do_sample": False,
-                "num_beams":num_return_sequences * 2,
-                "num_beam_groups": num_return_sequences,
-                "diversity_penalty":1.0,
-                "num_return_sequences": num_return_sequences,
-                "pad_token_id": processor.tokenizer.eos_token_id,
-            }
-        else:
-            gen_kwargs = {
-                "max_new_tokens":max_new_tokens,
-                "do_sample":True,
-                "temperature":0.7,
-                "top_p":0.9,
-                "num_return_sequences":num_return_sequences,  # Multiple sequences for THIS image
-                "pad_token_id":processor.tokenizer.eos_token_id,
-            }
+        gen_kwargs = {
+            "max_new_tokens":max_new_tokens,
+            "do_sample":True,
+            "temperature":temperature,
+            "top_p":0.9,
+            "num_return_sequences":num_return_sequences,  # Multiple sequences for THIS image
+            "pad_token_id":processor.tokenizer.eos_token_id,
+        }
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,

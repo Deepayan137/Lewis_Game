@@ -151,7 +151,7 @@ def main():
     if args.ret_json == "retrieval_top3_with_negative.json":
         save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_K_3_with_neg"
     elif args.ret_json == "retrieval_top3.json":
-        save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_K_3"
+        save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_K_3_500"
     out = save_dataset_dict(ds, save_dirname)
     print(f"Dataset saved in: {save_dirname}")
     # quick sanity check load

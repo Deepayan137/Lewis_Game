@@ -597,7 +597,7 @@ if __name__ == "__main__":
     parser.add_argument("--category", type=str, default="all")
     parser.add_argument("--concept_name", type=str, default="bo")
     parser.add_argument("--seed", type=int, default=23)
-    parser.add_argument("--db_type", type=str, default="original", choices=["original", "original_7b", "finetuned", 'finetuned_7b', 'lora_finetuned_7b'])
+    parser.add_argument("--db_type", type=str, default="original", choices=["original_3b", "original_7b", 'lora_finetuned_7b', 'lora_finetuned_7b'])
     # parser.add_argument("--model_type", type=str, default="base_qwen", choices=["base_qwen", "ft_qwen"])
     # parser.add_argument("--model_path", type=str, default="Qwen/Qwen2-VL-7B-Instruct")
     parser.add_argument("--batch_size", type=int, default=4)
