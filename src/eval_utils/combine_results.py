@@ -19,9 +19,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dataset", default="YoLLaVA", help="Dataset name: YoLLaVA, MyVLM, DreamBooth, or PerVA")
     p.add_argument("--db_type", default="original")
     p.add_argument("--model_type", default="base_qwen")
+    p.add_argument("--eval_type", default="recall")
     p.add_argument("--category", default="all")  # preserved for compatibility; not used when scanning
     p.add_argument("--seed", type=int, default=23)
-    p.add_argument("--k", type=int, default=2)
+    p.add_argument("--k", type=int, default=3)
     p.add_argument("--out", type=str, default=None)  # preserved for compatibility; file name is standardized
     return p.parse_args()
 
@@ -92,10 +93,9 @@ def main():
 
         for name in concept_names:
             # Expected file:
-            # results/<dataset>/<category>/<concept>/seed_<seed>/results_model_<model_type>_db_<db_type>_k_<k>.json
+            eval_json = f'results_model_{args.model_type}_db_{args.db_type}_k_{args.k}.json' if args.eval_type == 'recall' else f"recognition_model_{args.model_type}_db_{args.db_type}.json"
             concept_path = (
-                outpath / name / f"seed_{args.seed}" /
-                f"results_model_{args.model_type}_db_{args.db_type}_k_{args.k}.json"
+                outpath / name / f"seed_{args.seed}" / eval_json
             )
             in_total_concepts += 1
 
@@ -106,7 +106,10 @@ def main():
 
                 correct = int(data["metrics"]["correct count"])
                 total = int(data["metrics"]["total samples"])
-
+                if total ==0:
+                    with open("debug.txt", "a", encoding="utf-8") as f:
+                        f.write(f"{category},{name}\n")
+                    print(f"{category},{name}\n")
                 results_per_cat["metrics"]["correct"] += correct
                 results_per_cat["metrics"]["total"] += total
                 results_per_cat["concepts"][name] = {
@@ -142,12 +145,11 @@ def main():
         results["metrics"]["accuracy"] = safe_accuracy(
             results["metrics"]["correct"], results["metrics"]["total"]
         )
-
     # Report and save
     print(f"total concepts:{in_total_concepts}")
     print(f"results showing for concepts:{concept_count}")
-
-    save_path = Path("results") / dataset_norm / f"results_model_{args.model_type}_db_{args.db_type}_seed_{args.seed}_k_{args.k}.json"
+    report_json = f"recognition_model_{args.model_type}_db_{args.db_type}_seed_{args.seed}.json" if args.eval_type == 'recognition' else f"recall_model_{args.model_type}_db_{args.db_type}_seed_{args.seed}.json"
+    save_path = Path("results") / dataset_norm / report_json
     save_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Saving model at {save_path}")
 

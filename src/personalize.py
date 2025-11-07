@@ -80,21 +80,7 @@ def get_prompt(descriptions: Sequence[str], category: str,  names, query_desc=""
     
     return prompt
 
-# def generate_query_description(args, data_loader):
-#     if args.db_type == 'original':
-#         model_path = "Qwen/Qwen2-VL-2B-Instruct"
-#     else:
-#         model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2-VL-2B-Instruct_GRPO_lewis_{args.category}_test_subset"
-#     speaker_model, processor = setup_model(model_path)
-#     raw_results = run_description_generation(
-#         speaker_model,
-#         processor,
-#         data_loader)
-#     query_descs = []
-#     for name, desc in raw_results:
-#         desc_clean = extract_speaker_answer_term(desc)
-#         query_descs.append(desc_clean)
-#     return query_descs
+
 
 def prepare_test_retrieval_items(
     args,
@@ -133,8 +119,8 @@ def prepare_test_retrieval_items(
         data_loader = create_data_loader(dataset, batch_size=args.batch_size)
         query_descs = []
         # generate query descriptions
-        # if use_query_desc:
-        #     query_descs = generate_query_description(args, data_loader)
+        if use_query_desc:
+            query_descs = generate_query_description(args, data_loader)
         # load description dictionary produced earlier by description generation step
         with description_json.open("r", encoding="utf-8") as fh:
             desc_lookup: Dict[str, str] = json.load(fh)
@@ -235,7 +221,6 @@ def run_inference_loop(
     # device inference guidance (model may already be on device)
     if device is None:
         device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-
     for batch in tqdm(loader, desc="Generating model responses"):
         # load images lazily if not provided
         images = []
@@ -252,8 +237,9 @@ def run_inference_loop(
         paths = [it.get("path") for it in batch]
         ret_paths = [it.get("ret_path", []) for it in batch]
         letter2names = [it.get("letter2name", []) for it in batch]
+        
         try:
-            responses = speaker_describes_batch(model, processor, images, problems, temperature=temperature, max_new_tokens=max_new_tokens)
+            responses = speaker_describes_batch(model, processor, problems, images, temperature=temperature, max_new_tokens=max_new_tokens)
         except Exception:
             LOG.exception("Failed generating model responses for current batch; skipping.")
             # append placeholders for each item in batch and continue

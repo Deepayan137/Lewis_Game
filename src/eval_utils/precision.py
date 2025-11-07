@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--db_type", default="original")
     p.add_argument("--model_type", default="base_qwen")
     p.add_argument("--seed", type=int, default=23)
-    p.add_argument("--k", type=int, default=2)
+    p.add_argument("--k", type=int, default=3)
     p.add_argument("--category", default="all")
     p.add_argument("--out", type=str, default=None)
     return p.parse_args()

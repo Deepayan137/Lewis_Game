@@ -60,8 +60,8 @@ def process_batch_efficiently(
         contents = speaker_describes_batch(
             speaker_model,
             processor,
-            images,
             problems,
+            images,
             temperature=temperature,
             max_new_tokens=max_new_tokens,
             num_return_sequences=num_return_sequences
@@ -125,7 +125,7 @@ def parse_args() -> argparse.Namespace:
                        help="Path to the catalog JSON file")
     parser.add_argument("--category", type=str, default='clothe',
                        help='Model category')
-    parser.add_argument("--model_type", type=str, default='original', choices=['original_3b', 'original_7b', 'lora_finetuned_3b', 'lora_finetuned_7b'],
+    parser.add_argument("--model_type", type=str, default='original',
                        help='Model type: original or finetuned')
     parser.add_argument("--seed", type=int, default=42,
                        help='random seed')

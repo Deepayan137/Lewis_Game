@@ -50,6 +50,7 @@ class SimpleImageDataset(Dataset):
         random.seed(seed)
         self.image_paths = self._load_image_paths()
         logging.info(f"Dataset initialized with {len(self.image_paths)} images from category '{category}' ({split} split)")
+    
     def _load_image_paths(self):
         """Load image paths from JSON file"""
         with open(self.json_path, 'r') as f:
