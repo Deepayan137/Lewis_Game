@@ -136,7 +136,7 @@ def parse_args():
     ap.add_argument("--root", default="outputs")
     ap.add_argument("--dataset", default="YoLLaVA")
     ap.add_argument("--category", default="all")
-    ap.add_argument("--ret_json", default="retrieval_top3.json")
+    ap.add_argument("--ret_json", default="retrieval_top5.json")
     ap.add_argument("--seed", type=int, default=23, help="Random seed for reproducibility.")
     
     return ap.parse_args()
@@ -148,10 +148,37 @@ def main():
     ds = json_to_dataset_dict(args.ret_json, root, args.category, args.seed, args.dataset, with_negative=False)
     # optionally you could include args.dataset into the save_dirname if that helps naming consistency
     print_dataset_statistics(ds)
-    if args.ret_json == "retrieval_top3_with_negative.json":
-        save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_K_3_with_neg"
-    elif args.ret_json == "retrieval_top3.json":
-        save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_K_3_500"
+    # if args.ret_json == "retrieval_top3_with_negative.json":
+    #     save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_K_3_with_neg"
+    # elif args.ret_json == "retrieval_top3_subset_20.json":
+    #============================================
+    subset = None
+    if 'subset_20' in args.ret_json:
+        subset = "subset_20"
+    elif 'subset_30' in args.ret_json:
+        subset = "subset_30"
+    suffix = 'num_samp_300'
+    K=3
+    # suffix = ""
+    # if "_easy_0.5" in args.ret_json:
+    #     suffix = "easy_0.5"
+    # elif "_easy_1.0" in args.ret_json:
+    #     suffix = "easy_1.0"
+    # K=None
+    # if "top2" in args.ret_json:
+    #     K = 2
+    # elif "top5" in args.ret_json:
+    #     K = 5
+    # else:
+    #     K = 3
+
+    if subset:
+        save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_K_{K}_{subset}_{suffix}"
+    else:
+        save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_K_{K}"
+    # elif args.ret_json.startswith("retrieval_top3_easy"):
+    #     easy_fr = '0.5'
+    #     save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_easy_{easy_fr}_K_3"
     out = save_dataset_dict(ds, save_dirname)
     print(f"Dataset saved in: {save_dirname}")
     # quick sanity check load

@@ -18,8 +18,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Aggregate concept-level metrics into dataset/category summaries.")
     p.add_argument("--dataset", default="YoLLaVA", help="Dataset name: YoLLaVA, MyVLM, DreamBooth, or PerVA")
     p.add_argument("--db_type", default="original")
-    p.add_argument("--model_type", default="base_qwen")
-    p.add_argument("--eval_type", default="recall")
+    p.add_argument("--model_type", default="original_7b")
+    p.add_argument("--eval_type", default="recognition")
     p.add_argument("--category", default="all")  # preserved for compatibility; not used when scanning
     p.add_argument("--seed", type=int, default=23)
     p.add_argument("--k", type=int, default=3)
@@ -57,6 +57,7 @@ def main():
     args = parse_args()
     dataset = args.dataset  # keep original for paths/printing
     dataset_norm = dataset.strip()  # do not lower-case paths; keep exact name as provided
+
     print(f"# Concepts for dataset={dataset}, seed={args.seed}")
 
     # Choose category list
@@ -67,7 +68,7 @@ def main():
         categories = ["all"]
 
     overall = {
-        "metrics": {"correct": 0, "total": 0, "accuracy": 0.0},
+        "metrics": {"correct_yes": 0, "total_yes": 0, "correct_no": 0, "total_no": 0, "pos_accuracy": 0.0, "neg_accuracy": 0.0},  # FIX: Added missing keys
         "category": {},  # For PerVA: category -> accuracy; for others not used in final output
     }
 
@@ -75,7 +76,7 @@ def main():
     in_total_concepts = 0
     concept_count = 0
 
-    # We’ll reuse this for the final object in non-PerVA cases (it will end up as the last category's aggregation,
+    # We'll reuse this for the final object in non-PerVA cases (it will end up as the last category's aggregation,
     # which is correct here because categories=['all']).
     results_per_cat_last = None
 
@@ -83,9 +84,9 @@ def main():
         outpath = Path("results") / dataset_norm / category
 
         # Aggregate object for this category
-        
+
         results_per_cat = {
-            "metrics": {"correct": 0, "total": 0, "accuracy": 0.0},
+            "metrics": {"correct_yes": 0, "correct_no": 0, "total_yes": 0, "total_no": 0},  # FIX: fixed spacing in correct_no
             "concepts": {}
         }
 
@@ -94,6 +95,7 @@ def main():
         for name in concept_names:
             # Expected file:
             eval_json = f'results_model_{args.model_type}_db_{args.db_type}_k_{args.k}.json' if args.eval_type == 'recall' else f"recognition_model_{args.model_type}_db_{args.db_type}.json"
+            # import pdb;pdb.set_trace()
             concept_path = (
                 outpath / name / f"seed_{args.seed}" / eval_json
             )
@@ -104,32 +106,44 @@ def main():
                 with concept_path.open("r", encoding="utf-8") as f:
                     data = json.load(f)
 
-                correct = int(data["metrics"]["correct count"])
-                total = int(data["metrics"]["total samples"])
-                if total ==0:
+                correct_yes = int(data["metrics"]["correct_yes"])
+                total_yes = int(data["metrics"]["total_yes"])
+                correct_no = int(data["metrics"]["correct_no"])
+                total_no = int(data["metrics"]["total_no"])
+                
+                # FIX: Check individual totals instead of undefined 'total' variable
+                if total_yes == 0 and total_no == 0:
                     with open("debug.txt", "a", encoding="utf-8") as f:
-                        f.write(f"{category},{name}\n")
-                    print(f"{category},{name}\n")
-                results_per_cat["metrics"]["correct"] += correct
-                results_per_cat["metrics"]["total"] += total
+                        f.write(f"{category},{name},zero_samples\n")
+                    print(f"{category},{name},zero_samples")
+                
+                results_per_cat["metrics"]["correct_yes"] += correct_yes
+                results_per_cat["metrics"]["total_yes"] += total_yes
+                results_per_cat["metrics"]["correct_no"] += correct_no
+                results_per_cat["metrics"]["total_no"] += total_no
                 results_per_cat["concepts"][name] = {
-                    "accuracy": safe_accuracy(correct, total),
-                    "total": total,
+                    "pos_accuracy": safe_accuracy(correct_yes, total_yes),
+                    "neg_accuracy": safe_accuracy(correct_no, total_no),
+                    "total_yes": total_yes,
+                    "total_no": total_no
                 }
             else:
                 # Log missing concept to debug file
+                print(f"{category},{name},missing_file\n")
                 with open("debug.txt", "a", encoding="utf-8") as f:
-                    f.write(f"{category},{name}\n")
+                    f.write(f"{category},{name},missing_file\n")  # FIX: Added label for clarity
 
         # finalize per-category accuracy
         m = results_per_cat["metrics"]
-        m["accuracy"] = safe_accuracy(m["correct"], m["total"])
-
+        m["pos_accuracy"] = safe_accuracy(m["correct_yes"], m["total_yes"])
+        m["neg_accuracy"] = safe_accuracy(m["correct_no"], m["total_no"])
         # For PerVA we keep an overall aggregation and store per-category accuracy
         if dataset == "PerVA":
-            overall["metrics"]["correct"] += m["correct"]
-            overall["metrics"]["total"] += m["total"]
-            overall["category"][category] = m["accuracy"]
+            overall["metrics"]["correct_yes"] += m["correct_yes"]
+            overall["metrics"]["total_yes"] += m["total_yes"]
+            overall["metrics"]["correct_no"] += m["correct_no"]
+            overall["metrics"]["total_no"] += m["total_no"]
+            overall["category"][category] = {"pos_accuracy": m["pos_accuracy"], "neg_accuracy": m["neg_accuracy"]}  # FIX: Fixed key name consistency
 
         # Keep the last (only) category block for non-PerVA output
         results_per_cat_last = results_per_cat
@@ -137,18 +151,21 @@ def main():
     # Determine final results object to save
     if dataset in ["YoLLaVA", "MyVLM", "DreamBooth"]:
         results = results_per_cat_last if results_per_cat_last is not None else {
-            "metrics": {"correct": 0, "total": 0, "accuracy": 0.0},
+            "metrics": {"correct_yes": 0, "total_yes": 0, "pos_accuracy": 0.0, "correct_no": 0, "total_no": 0, "neg_accuracy": 0.0},
             "concepts": {}
         }
     else:
         results = overall
-        results["metrics"]["accuracy"] = safe_accuracy(
-            results["metrics"]["correct"], results["metrics"]["total"]
+        results["metrics"]["pos_accuracy"] = safe_accuracy(
+            results["metrics"]["correct_yes"], results["metrics"]["total_yes"]
+        )
+        results["metrics"]["neg_accuracy"] = safe_accuracy(
+            results["metrics"]["correct_no"], results["metrics"]["total_no"]
         )
     # Report and save
-    print(f"total concepts:{in_total_concepts}")
-    print(f"results showing for concepts:{concept_count}")
-    report_json = f"recognition_model_{args.model_type}_db_{args.db_type}_seed_{args.seed}.json" if args.eval_type == 'recognition' else f"recall_model_{args.model_type}_db_{args.db_type}_seed_{args.seed}.json"
+    print(f"total concepts: {in_total_concepts}")  # FIX: Added space after colon
+    print(f"results showing for concepts: {concept_count}")  # FIX: Added space after colon
+    report_json = f"recognition_model_{args.model_type}_db_{args.db_type}_seed_{args.seed}.json"
     save_path = Path("results") / dataset_norm / report_json
     save_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Saving model at {save_path}")

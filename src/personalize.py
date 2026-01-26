@@ -299,7 +299,6 @@ def run_inference_loop(
 
 def parse_args() -> argparse.Namespace:
     import argparse
-
     parser = argparse.ArgumentParser(description="Reasoning-based personalization evaluation")
     parser.add_argument("--data_name", type=str, default="YoLLaVA")
     parser.add_argument("--catalog_file", type=str, default="main_catalog_seed_23.json")

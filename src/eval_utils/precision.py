@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Compute macro P/R/F1 from concept prediction files (list of dicts).")
     p.add_argument("--dataset", default="YoLLaVA", help="YoLLaVA, MyVLM, DreamBooth, or PerVA")
     p.add_argument("--db_type", default="original")
-    p.add_argument("--model_type", default="base_qwen")
+    p.add_argument("--model_type", default="original_7b")
     p.add_argument("--seed", type=int, default=23)
     p.add_argument("--k", type=int, default=3)
     p.add_argument("--category", default="all")

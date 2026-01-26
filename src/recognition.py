@@ -32,29 +32,50 @@ def set_seed(seed: int) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def get_prompt(description: Sequence[str], test_question: str) -> str:
+def get_prompt(description: str, test_question: str, vqa=False) -> str:
     """
     Build the prompt used to ask the model to reason and return a JSON
     with keys "Reasoning" and "Answer".
-    `descriptions` is typically a list of strings (distinguishing features).
+    Uses the description to ground attributes of both images before comparison.
     """
-    answer_format = {}
-    answer_format.update({
-        "Reasoning": "<Brief justification>",
-        "Answer": f"<yes or no>"
-    })
+    if vqa:
+        answer_format = {
+        "Reasoning": "<Brief comparison based on key attributes>",
+        "Answer": "<A or B>"
+    }
+    else:
+        answer_format = {
+            "Reasoning": "<Brief comparison based on key attributes>",
+            "Answer": "<yes or no>"
+        }
+    test_question = test_question.replace('the image', 'the first image')
     prompt = (
-        f"You are given an image and a text description of a specific subject:\n\n"
-        f"**Description:**\n{description}\n\n"
-        "Your Task:\n"
-        f"Carefully examine the image and compare it with the provided description to answer: {test_question}\n\n"
-        "Focus on the subject's distinguishing features rather than superficial details such as background, pose, lighting, clothes or accessories.\n"
-        f"Provide your reasoning based on the two images and the given description.\n"
-        "Output Requirements:\n"
-        f"- Your response MUST be a valid JSON exactly matching the format:\n{json.dumps(answer_format)}\n"
-        "- Do not include any extra text, explanations, or formatting outside of the JSON.\n"
+        f"You are a helpful AI agent specializing in image analysis and object recognition\n\n"
+        f"You are given two images, additionally, the name and a textual description of the subject in the second image is also provided below:\n\n"
+        f"{json.dumps(description, indent=2)}\n"
+        f"Your Task:\n"
+        f"- Compare the first image with the second image and answer the following question:"
+        f"{test_question}"
+        f"-**Ignore superficial details** such as clothing, accessories, pose variations, or surrounding elements (e.g., people in the background).\n"
+        f"- Focus only on non-variant/permanent features such as color, shape, pattern, text for objects/buildings and facial features for people.\n"
+        f"- If you are uncertain then you can refer the textual description of the second image to make a more informed decision.\n"
+        f"**Output (JSON only):**\n{json.dumps(answer_format, indent=2)}"
     )
+    # prompt = (
+    #     f"You are a helpful AI agent specializing in image analysis and object recognition\n\n"
+    #     f"You are provided with a query image along with the name and description of a subject detailed below:\n\n"
+    #     f"{json.dumps(description, indent=2)}\n"
+    #     f"Your Task:\n"
+    #     f"1. Generate an attribute-focused description of the subject in the query image. "
+    #     "Focus on its distinguishing features rather than superficial details such as background, pose, lighting, clothes or accessories.\n"
+    #     f"2. Compare your generated description of the query image with the provided description of the subject and answer the following question:\n"
+    #     f"{test_question}"
+    #     "Output Requirements:\n"
+    #     f"- Your response MUST be a valid JSON exactly matching the format:\n{json.dumps(answer_format)}\n"
+    #     "- Do not include any extra text, explanations, or formatting outside of the JSON.\n"
+    # )
     return prompt
+
 
 def run_inference_loop(
     model,
@@ -71,13 +92,13 @@ def run_inference_loop(
     ret_paths, response (raw model text), pred_name (cleaned)
     """
     dataset = DictListDataset(list(items))
-    
+    # dataset = dataset[:10]
     loader = DataLoader(
         dataset, batch_size=batch_size, shuffle=False, collate_fn=dict_collate_fn, num_workers=4
     )
 
     results: List[Dict[str, Any]] = []
-    correct_count = 0
+    correct_yes, correct_no, total_yes, total_no = 0, 0, 0, 0
 
     # device inference guidance (model may already be on device)
     if device is None:
@@ -95,7 +116,7 @@ def run_inference_loop(
         paths = [it.get("query_path") for it in batch]  # FIX: changed "path" to "query_path"
         ret_paths = [it.get("ret_path", []) for it in batch]
         try:
-            responses = speaker_describes_batch(model, processor, problems, images, temperature=temperature, max_new_tokens=max_new_tokens)
+            responses = speaker_describes_batch(model, processor, problems, images, ret_images, temperature=temperature, max_new_tokens=max_new_tokens)
         except Exception:
             LOG.exception("Failed generating model responses for current batch; skipping.")
             # append placeholders for each item in batch and continue
@@ -128,9 +149,14 @@ def run_inference_loop(
                 predictions.append("")
 
         for path, gt, rp, resp, pred in zip(paths, solutions, ret_paths, responses, predictions):  # FIX: added ret_paths to zip
-            is_correct = int(pred.lower() == gt.lower())
-            # is_correct = gt.lower() in pred.lower()
-            correct_count += is_correct
+            if gt.lower() == 'yes':
+                correct_yes += int(pred.lower() == gt.lower())
+                total_yes +=1
+            elif gt.lower() == 'no':
+                correct_no += int(pred.lower() == gt.lower())
+                total_no +=1
+            is_correct = gt.lower() in pred.lower()
+            # correct_count += is_correct
             results.append(
                 {
                     "image_path": path,
@@ -139,15 +165,26 @@ def run_inference_loop(
                     "ret_path": rp,  # FIX: added ret_path
                     "response": resp,
                     "pred": pred,
-                    "correct": bool(is_correct),
+                    "is_correct": bool(is_correct),
                 }
             )
 
         # free cuda mem (harmless if CPU)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    accuracy = correct_count / len(results) if results else 0.0
-    return results, accuracy, correct_count, len(results)
+    positive_accuracy = correct_yes / total_yes if total_yes > 0 else 0.0
+    negative_accuracy = correct_no / total_no if total_no > 0 else 0.0
+    weighted_accuracy = 0.5*(positive_accuracy + negative_accuracy)
+    metrics = {
+        "pos_acc":positive_accuracy,
+        "neg_acc":negative_accuracy,
+        "weighted":weighted_accuracy,
+        "correct_yes":correct_yes,
+        "correct_no":correct_no,
+        "total_yes":total_yes,
+        "total_no":total_no
+    }
+    return results, metrics
 
 
 def prepare_test_recognition_items(
@@ -173,6 +210,7 @@ def prepare_test_recognition_items(
         query_path = sub_item["path"]
         query_name = sub_item["name"]
         for concept_name in concept_names:
+            # if concept_name == query_name:
             ret_image_path = database["concept_dict"][f'<{concept_name}>']["image"]
             if isinstance(database["concept_dict"][f'<{concept_name}>']["image"], list):  # FIX: changed concept to concept_name
                 ret_path = database["concept_dict"][f'<{concept_name}>']["image"][0]  # FIX: changed concept to concept_name
@@ -185,7 +223,7 @@ def prepare_test_recognition_items(
                 "query_path": query_path,
                 "ret_path": ret_path,  # FIX: changed comma to colon
                 "ret_info": ret_info,    
-                "question": f"Is <{concept_name}> in the image? Answer in yes or no.",
+                "question": f"Is <{concept_name}> in the first image? Answer in yes or no.",
                 "solution": 'yes' if query_name == concept_name else 'no'
             }
             recognition_samples.append(sample)
@@ -255,7 +293,7 @@ def main():
         use_peft = True
     model, processor = setup_model(model_path, use_peft=use_peft)
     # run inference
-    results, accuracy, correct_count, total_samples = run_inference_loop(
+    results, metrics = run_inference_loop(
         model,
         processor,
         items,
@@ -271,17 +309,14 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
     outpath = outdir / f"recognition_model_{args.model_type}_db_{args.db_type}.json"
     output = {
-        "metrics":{
-            "accuracy": accuracy,
-            "correct count": correct_count,
-            "total samples": total_samples 
-            }, 
-        "results": results}
+        "metrics":metrics,
+        "results": results
+        }
     with outpath.open("w", encoding="utf-8") as fh:
         json.dump(output, fh, indent=2, ensure_ascii=False)
-
+    
     LOG.info("Saved results to %s", outpath)
-    LOG.info("Accuracy: %.4f", accuracy)
+    # LOG.info("metrics: %.4f", metrics)
 
 
 if __name__ == "__main__":

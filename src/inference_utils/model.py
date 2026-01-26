@@ -105,9 +105,9 @@ def speaker_describes_batch(model, processor, problems, images, ret_images=None,
         
         gen_kwargs = {
             "max_new_tokens": max_new_tokens,
-            "do_sample": True,
-            "temperature": temperature,
-            "top_p": 0.9,
+            "do_sample": False,
+            # "temperature": temperature,
+            # "top_p": 0.9,
             "num_return_sequences": num_return_sequences,  # Multiple sequences for THIS image
             "pad_token_id": processor.tokenizer.eos_token_id,
         }

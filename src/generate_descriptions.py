@@ -153,9 +153,45 @@ def main():
     elif args.model_type == 'original_7b':
         model_path = "Qwen/Qwen2-VL-7B-Instruct"
     elif args.model_type == 'lora_finetuned_2b':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2-VL-2B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}"
-    elif args.model_type == 'lora_finetuned_7b':
-        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}"
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-2B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}_K_3"
+    elif args.model_type == 'r64_a128':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B_GRPO_lewis_PerVA_seed_{args.seed}_r64_a128_K_3_subset30_no_beta"
+    elif args.model_type == 'r64_a256':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B_GRPO_lewis_PerVA_seed_{args.seed}_r64_a256_K_3_subset30_no_beta"
+    elif args.model_type == 'r64_a512':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B_GRPO_lewis_PerVA_seed_{args.seed}_r64_a512_K_3_subset30_no_beta"
+    elif args.model_type == 'r64_a1024':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B_GRPO_lewis_PerVA_seed_{args.seed}_r64_a1024_K_3_subset30_no_beta"
+    elif args.model_type == 'r128_a128':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B_GRPO_lewis_PerVA_seed_{args.seed}_r128_a128_K_3_subset30_no_beta"
+    elif args.model_type == 'r128_a256':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B_GRPO_lewis_PerVA_seed_{args.seed}_r128_a256_K_3_subset30_no_beta"
+    elif args.model_type == 'r128_a512':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B_GRPO_lewis_PerVA_seed_{args.seed}_r128_a512_K_3_subset30_no_beta"
+    elif args.model_type == 'r256_a128':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B_GRPO_lewis_PerVA_seed_{args.seed}_r128_a128_K_3_subset30_no_beta"
+    elif args.model_type == 'r256_a256':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B_GRPO_lewis_PerVA_seed_{args.seed}_r128_a256_K_3_subset30_no_beta"
+    elif args.model_type == 'r256_a512':
+        model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B_GRPO_lewis_PerVA_seed_{args.seed}_r128_a512_K_3_subset30_no_beta"
+    
+    # elif args.model_type == 'lora_finetuned_7b_easy_0.5':
+    #     model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}_K_3_30_concepts_easy_0.5"
+    # elif args.model_type == 'lora_finetuned_7b_easy_1.0':
+    #     model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}_K_3_30_concepts_easy_1.0"
+    # elif args.model_type == 'lora_finetuned_7b_K_2':
+    #     model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}_K_2_30_concepts"
+    # elif args.model_type == 'lora_finetuned_7b_K_5':
+    #     model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}_K_5_30_concepts"
+    # elif args.model_type == 'lora_finetuned_7b_K_4':
+    #     model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}_K_4_subset_30_concepts"
+    # elif args.model_type == 'lora_finetuned_7b_20_concepts':
+    #     model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}_K_3_20_concepts"
+    # elif args.model_type == 'lora_finetuned_7b_30_concepts':
+    #     model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}_K_3_30_concepts"
+    # elif args.model_type == 'lora_finetuned_7b_40_concepts':
+    #     model_path = f"/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_SPEAKER_PerVA_all_train_seed_{args.seed}_K_3_subset_40_concepts"
+    
     LOG.info("Loading model from %s", model_path)
     start_time = time.time()
     use_peft = False

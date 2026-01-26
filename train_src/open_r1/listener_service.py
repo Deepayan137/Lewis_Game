@@ -260,7 +260,7 @@ listener: Optional[ListenerService] = None
 def startup():
     global listener
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-VL-3B-Instruct")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-VL-7B-Instruct")
     parser.add_argument("--use_8bit", action="store_true")
     parser.add_argument("--device", type=str, default="cuda:0")
     args, _ = parser.parse_known_args()

@@ -10,7 +10,6 @@ from urllib.parse import urlparse
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
-
 from datasets import load_dataset, load_from_disk
 from datasets import DatasetDict, Dataset
 from transformers import Qwen2VLForConditionalGeneration
@@ -451,30 +450,6 @@ def format_reward(completions, **kwargs):
     
     return rewards
 
-# def format_reward(completions, **kwargs):
-#     """
-#     Reward function that checks the format of the MODEL'S RESPONSE,
-#     not the entire prompt-response string.
-#     """
-#     pattern = r"<think>.*?</think>\s*<answer>.*?</answer>"
-#     completion_contents = [completion[0]["content"] for completion in completions]
-#     rewards = []
-#     for content in completion_contents:
-#         # --- FIX: Isolate the assistant's response ---
-#         # The model's actual output comes after "assistant\n"
-#         parts = content.split('assistant\n')
-        
-#         # Take the last part, which is the model's generation
-#         model_output = parts[-1] if len(parts) > 1 else content
-        
-#         # Now, check the format on the isolated output
-#         match = re.fullmatch(pattern, model_output.strip(), re.DOTALL)
-        
-#         reward = 1.0 if match else 0.0
-#         rewards.append(reward)
-
-#     return rewards
-
 def length_reward(completions, logger=None, **kwargs):
     """
     Reward if the model's <answer> contains exactly one sentence.
@@ -580,8 +555,9 @@ def make_conversation_lewis_game(example):
         ],
     }
 
-def main(script_args, training_args, model_args):
+def main(script_args, training_args, model_args, lora_args):
     script_args.reward_funcs = ['accuracy', 'format']
+    print(script_args)
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
     from datasets import load_dataset
     dataset_path = script_args.dataset_name
@@ -593,9 +569,9 @@ def main(script_args, training_args, model_args):
         print("Training in LORA mode")
         from peft import LoraConfig
         peft_config = LoraConfig(
-            r=64,  # the rank of the LoRA matrices
-            lora_alpha=1128, # the weight
-            lora_dropout=0.01, # dropout to add to the LoRA layers
+            r=lora_args.lo_rank,  # the rank of the LoRA matrices
+            lora_alpha=lora_args.lo_alpha, # the weight
+            lora_dropout=lora_args.lo_dropout, # dropout to add to the LoRA layers
             bias="none", # add bias to the nn.Linear layers?
             task_type="CAUSAL_LM",
             target_modules="all-linear", # the name of the layers to add LoRA
@@ -623,8 +599,14 @@ def main(script_args, training_args, model_args):
     if training_args.push_to_hub:
         trainer.push_to_hub(dataset_name=script_args.dataset_name)
 
+@dataclass
+class LoRAArgs:
+    """Local dataclass so HF parser will accept LoRA CLI flags."""
+    lo_rank: int = field(default=64, metadata={"help": "LoRA rank"})
+    lo_alpha: int = field(default=128, metadata={"help": "LoRA alpha"})
+    lo_dropout: float = field(default=0.0, metadata={"help": "LoRA dropout"})
 
 if __name__ == "__main__":
-    parser = TrlParser((GRPOScriptArguments, GRPOConfig, ModelConfig))
-    script_args, training_args, model_args = parser.parse_args_and_config()
-    main(script_args, training_args, model_args)
+    parser = TrlParser((GRPOScriptArguments, GRPOConfig, ModelConfig, LoRAArgs))
+    script_args, training_args, model_args, lora_args = parser.parse_args_and_config()
+    main(script_args, training_args, model_args, lora_args)

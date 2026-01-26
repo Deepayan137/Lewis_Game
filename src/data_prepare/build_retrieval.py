@@ -144,56 +144,51 @@ class HierarchicalClipRetriever():
         image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
         return image_features.detach().cpu().numpy()
 
-    def get_alternate_query(self, query_image_path, remaining_paths, alpha=0.6, beta=0.8, random_negative=False):
-        # Extract query features
+    def get_alternate_query(self, query_image_path, remaining_paths, alpha=0.6, beta=0.8,
+                            random_negative=False, easy_pos_prob: float = 0.0):
+        if not remaining_paths:
+            return None
+
         if random_negative:
             return random.choice(remaining_paths)
-        else:    
-            query_features = self.get_image_features(query_image_path)  # (1, d)
-            if query_features.ndim == 1:
-                query_features = query_features[np.newaxis, :]  # ensure (1, d)
-            remaining_features = [self.get_image_features(item) for item in remaining_paths]
-            remaining_features = np.vstack(remaining_features)  # (N, d)
-            similarity = 1 - cdist(query_features, remaining_features, 'cosine')  # (1, N)
-            similarity = similarity.flatten()
-            sorted_idx = np.argsort(similarity)
-            median_idx = sorted_idx[0]
-            return remaining_paths[median_idx]
-    
-    def hierarchical_distractor_sampling_with_negatives(self, query_image_path, num_distractors=4, 
-                                       candidate_classes=8, selection_strategy='most_similar'):
-        query_features = self.get_image_features(query_image_path)
-        query_class_name = self._get_class_from_path(query_image_path)
-        distractor_candidates = []
-        image_ids_in_class = self.class_name2images[query_class_name]
-        
-        if selection_strategy == 'most_dissimilar':
-            image_id = self._find_most_dissimilar_in_class(
-                query_features, image_ids_in_class, k=num_distractors
-            )
-        elif selection_strategy == 'most_similar':
-            image_id, _ = self._find_most_dissimilar_in_class(
-                query_features, image_ids_in_class, k=num_distractors, reverse=True
-            )
-        elif selection_strategy == 'random':
-            image_id = random.sample(image_ids_in_class, num_distractors)
-        else:
-            if random.random() < 0.5:
-                image_id = self._find_most_dissimilar_in_class(
-                    query_features, image_ids_in_class, k=num_distractors
-                )
-            else:
-                image_id = random.sample(image_ids_in_class, num_distractors)
-        
-        for item in image_id:
 
-            distractor_candidates.append({
-                'image_id': item,
-                'image_path': self.image_id2info[item]['path'],
-                'class_name': query_class_name,
-            })
-        selected_distractors = distractor_candidates
-        return selected_distractors
+        # Extract query features
+        query_features = self.get_image_features(query_image_path)  # (d,) or (1, d)
+        if query_features is None:
+            return None
+        if query_features.ndim == 1:
+            query_features = query_features[np.newaxis, :]  # ensure (1, d)
+
+        # Extract remaining features and stack
+        remaining_features = [self.get_image_features(item) for item in remaining_paths]
+        # Filter out any None features just in case
+        valid = [(p, f) for p, f in zip(remaining_paths, remaining_features) if f is not None]
+        if not valid:
+            return None
+        paths_valid, feats_valid = zip(*valid)
+        remaining_features = np.vstack(feats_valid)  # (N, d)
+
+        # Cosine similarity: 1 - cosine_distance
+        similarity = 1 - cdist(query_features, remaining_features, 'cosine')  # (1, N)
+        similarity = similarity.flatten()  # (N,)
+
+        # indices for most and least similar
+        most_sim_idx = int(np.argmax(similarity))
+        least_sim_idx = int(np.argmin(similarity))
+
+        # Decide based on easy_pos_prob
+        if easy_pos_prob <= 0.0:
+            chosen_idx = least_sim_idx
+        elif easy_pos_prob >= 1.0:
+            chosen_idx = most_sim_idx
+        else:
+            if random.random() < float(easy_pos_prob):
+                chosen_idx = most_sim_idx
+            else:
+                chosen_idx = least_sim_idx
+
+        return paths_valid[chosen_idx]
+
     
     def hierarchical_distractor_sampling(self, query_image_path, num_distractors=4, 
                                        candidate_classes=8, selection_strategy='most_similar'):
@@ -284,7 +279,7 @@ class HierarchicalClipRetriever():
                 return part
         return None
     
-    def create_training_batch(self, query_image_path, remaining_paths, category, num_distractors=4, random_negative=False, selection_strategy='most_similar'):
+    def create_training_batch(self, query_image_path, remaining_paths, category, num_distractors=4, random_negative=False, selection_strategy='most_similar', easy_pos_prob=0.0):
         """
         Create a complete training batch for Lewis game
         Returns query path, distractor paths, and target index (always 0)
@@ -295,7 +290,7 @@ class HierarchicalClipRetriever():
             distractors = self.hierarchical_distractor_sampling(query_image_path, num_distractors, selection_strategy=selection_strategy)
 
         try:
-            new_query_image_path = self.get_alternate_query(query_image_path, remaining_paths, random_negative=random_negative)
+            new_query_image_path = self.get_alternate_query(query_image_path, remaining_paths, random_negative=random_negative, easy_pos_prob=easy_pos_prob)
         except Exception as e:
             print(f"Problem at query: {query_image_path}")
             new_query_image_path = query_image_path
@@ -318,11 +313,12 @@ def main():
     parser.add_argument('--category', type=str, default="clothe")
     parser.add_argument('--split', type=str, default="train")
     parser.add_argument('--catalog_file', type=str, default="train_catalog_seed_23.json")
-    parser.add_argument('--distractors', type=int, default=4)
+    parser.add_argument('--distractors', type=int, default=2)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--out_dir', type=str, default='outputs/PerVA', help='Optional output directory (defaults to --root)')
     parser.add_argument('--random_negative', action='store_true', default=False, help='Use random negative sampling (default: False)')
     parser.add_argument('--with_negative', action='store_true', default=False, help='use negatives sourced from LAION')
+    parser.add_argument('--easy_pos_prob', type=float, default=0.0)
     args = parser.parse_args()
     # seed = int(args.catalog_file.split('_')[-1].split('.')[0])
     args.dataset = os.path.basename(args.out_dir)
@@ -362,28 +358,30 @@ def main():
         for image_path in image_paths:
             remaining_paths = [item for item in data[category][concept][args.split] if item != image_path]
             batch = retriever.create_training_batch(image_path, remaining_paths, category, num_distractors=args.distractors, 
-            random_negative=args.random_negative, selection_strategy=selection_strategy)
+                random_negative=args.random_negative, selection_strategy=selection_strategy, easy_pos_prob=args.easy_pos_prob)
             concept_list.append({
                 "query_path":batch['query_path'],
                 "ret_paths":batch['image_paths'],
                 'label':batch['target_index'],
                 'category':batch['category'],
             })
-        # if args.dataset == 'MyVLM':
-        #     selection_strategy = 'random'
-        #     for image_path in data[category][concept][args.split]:
-        #         remaining_paths = [item for item in data[category][concept][args.split] if item != image_path]
-        #         batch = retriever.create_training_batch(image_path, remaining_paths, category, num_distractors=args.distractors, 
-        #         random_negative=args.random_negative, selection_strategy=selection_strategy)
-        #         concept_list.append({
-        #             "query_path":batch['query_path'],
-        #             "ret_paths":batch['image_paths'],
-        #             'label':batch['target_index'],
-        #             'category':batch['category'],
-        #         })
-    
     K = args.distractors + 1
-    save_file = f'retrieval_top{K}_with_negative.json' if with_negative else f'retrieval_top{K}.json'
+    # Determine save_file suffix based on catalog_file name for clarity and flexibility
+    base_catalog = os.path.basename(args.catalog_file)
+    if f"train_combined_concepts_subset_30_seed_{args.seed}.json" == base_catalog or f"validation_combined_concepts_subset_30_seed_{args.seed}.json" == base_catalog:
+        split_tag = "subset_30"
+    elif f"train_combined_concepts_subset_20_seed_{args.seed}.json" == base_catalog or f"validation_combined_concepts_subset_20_seed_{args.seed}.json" == base_catalog: 
+        split_tag = "subset_20"
+    else:
+        import re
+        match = re.search(r'subset_(\d+)', base_catalog)
+        split_tag = f"subset_{match.group(1)}" if match else "subset_unknown"
+    if base_catalog.startswith('train'):
+        save_file = f'retrieval_top{K}_{split_tag}.json'
+    elif base_catalog.startswith("validation"):
+        save_file = f'val_retrieval_top{K}_{split_tag}.json'
+    if args.easy_pos_prob != 0.0:
+        save_file = save_file.split('.')[0] + f'_easy_{args.easy_pos_prob}' + '.json'
     category_json_path = os.path.join(args.out_dir, category, f'seed_{seed}', save_file)
     with open(category_json_path, 'w') as f:
         json.dump(concept_list, f, indent=2)

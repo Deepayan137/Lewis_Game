@@ -97,7 +97,7 @@ def build_catalog_by_splitting(data_root: Path, relative: bool, train_fraction: 
                 k = max(1, min(num_train, n))
             else:
                 k = max(1, int(round(train_fraction * n)))
-            k = 1
+            k = 5
             shuffled = images.copy()
             random.shuffle(shuffled)
             train_list =  shuffled[:k]
