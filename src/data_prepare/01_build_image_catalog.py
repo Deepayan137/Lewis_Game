@@ -1,8 +1,9 @@
 import argparse
-import json
 import random
 from pathlib import Path
-from typing import Dict, List
+from typing import List
+
+from utils import save_json
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 
@@ -107,11 +108,6 @@ def build_catalog_by_splitting(data_root: Path, relative: bool, train_fraction: 
     return catalog
 
 
-def save_json(obj, out_path: Path):
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w") as f:
-        json.dump(obj, f, indent=2)
-    print(f"Wrote catalog JSON to {out_path}")
 
 
 def parse_args():
@@ -158,6 +154,7 @@ def main():
         )
 
     save_json(catalog, out_path)
+    print(f"Wrote catalog JSON to {out_path}")
 
 
 if __name__ == "__main__":

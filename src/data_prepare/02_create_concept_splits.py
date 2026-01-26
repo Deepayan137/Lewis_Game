@@ -1,20 +1,11 @@
 
 from pathlib import Path
 import argparse
-import json
 import math
 import random
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, Tuple
 
-
-def load_json(path: Path) -> Dict[str, Any]:
-    with path.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-def save_json(data: Dict[str, Any], path: Path) -> None:
-    with path.open("w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2, ensure_ascii=False)
+from utils import load_json, save_json, summarize_catalog
 
 
 def create_sampled_combined_splits(
@@ -124,23 +115,6 @@ def create_sampled_combined_splits(
     return train_combined, test_combined, metadata
 
 
-def summarize_split(data: Dict[str, Any]) -> Tuple[int, int, int]:
-    """
-    Return (n_concepts_total, total_train_images, total_test_images)
-    """
-    total_concepts = 0
-    total_train_images = 0
-    total_test_images = 0
-    categories = []
-    for category, concepts in data.items():
-        if not isinstance(concepts, dict):
-            continue
-        categories.append(category)
-        total_concepts += len(concepts)
-        for cname, splits in concepts.items():
-            total_train_images += len(splits.get("train", []))
-            total_test_images += len(splits.get("test", []))
-    return total_concepts, total_train_images, total_test_images
 
 
 def main():
@@ -182,9 +156,9 @@ def main():
     save_json(test_combined, test_name)
     save_json(metadata, meta_name)
 
-    # # Print summaries
-    train_concepts, train_tcount, train_testcount = summarize_split(train_combined)
-    test_concepts, test_tcount, test_testcount = summarize_split(test_combined)
+    # Print summaries
+    train_concepts, train_tcount, train_testcount = summarize_catalog(train_combined)
+    test_concepts, test_tcount, test_testcount = summarize_catalog(test_combined)
 
     print("\n=== Output summary ===")
     print(f"Train combined file: {train_name}")

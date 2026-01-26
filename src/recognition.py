@@ -1,81 +1,179 @@
+#!/usr/bin/env python3
+"""
+recognition.py
+
+Binary recognition task: Given a query image (Image 1) and a reference image
+(Image 2) with its description, determine if they show the same object.
+
+Usage:
+    python recognition.py --data_name PerVA --model_type original_7b --category all
+"""
+
 from __future__ import annotations
-import re
+
 import json
 import logging
-import os
 import string
-import random
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
-import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-# local project imports (assume these exist and are correct)
-from inference_utils.dataset import SimpleImageDataset, create_data_loader, DictListDataset, dict_collate_fn
+from inference_utils.common import (
+    set_seed,
+    get_model_config,
+    add_common_args,
+    save_results,
+    load_database,
+    get_database_path,
+    get_device,
+    clear_cuda_cache,
+)
+from inference_utils.dataset import DictListDataset, dict_collate_fn
 from inference_utils.model import setup_model, speaker_describes_batch
-from inference_utils.retriever import SimpleClipRetriever
-from inference_utils.cleanup import extract_reasoning_answer_term, extract_speaker_answer_term
-from generate_descriptions import run_description_generation
-from defined import yollava_reverse_category_dict, myvlm_reverse_category_dict
+from inference_utils.cleanup import extract_reasoning_answer_term
+
 LOG = logging.getLogger(__name__)
 
 
-def set_seed(seed: int) -> None:
-    """Set seeds for reproducibility."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+# ============================================================================
+# Prompt Generation
+# ============================================================================
 
-def get_prompt(description: str, test_question: str, vqa=False) -> str:
+def get_prompt(description: Dict[str, Any], test_question: str, vqa: bool = False) -> str:
     """
-    Build the prompt used to ask the model to reason and return a JSON
-    with keys "Reasoning" and "Answer".
-    Uses the description to ground attributes of both images before comparison.
+    Build the prompt for binary recognition or VQA task.
+
+    Args:
+        description: Dict with reference info (category, general, distinct features)
+        test_question: The question to answer
+        vqa: Whether this is a VQA task (changes answer format)
+
+    Returns:
+        Formatted prompt string
     """
     if vqa:
         answer_format = {
-        "Reasoning": "<Brief comparison based on key attributes>",
-        "Answer": "<A or B>"
-    }
+            "Reasoning": "<Brief comparison based on key attributes>",
+            "Answer": "<A or B>"
+        }
     else:
         answer_format = {
             "Reasoning": "<Brief comparison based on key attributes>",
             "Answer": "<yes or no>"
         }
+
     test_question = test_question.replace('the image', 'the first image')
+
     prompt = (
         f"You are a helpful AI agent specializing in image analysis and object recognition\n\n"
-        f"You are given two images, additionally, the name and a textual description of the subject in the second image is also provided below:\n\n"
+        f"You are given two images, additionally, the name and a textual description of the subject "
+        f"in the second image is also provided below:\n\n"
         f"{json.dumps(description, indent=2)}\n"
         f"Your Task:\n"
-        f"- Compare the first image with the second image and answer the following question:"
-        f"{test_question}"
-        f"-**Ignore superficial details** such as clothing, accessories, pose variations, or surrounding elements (e.g., people in the background).\n"
-        f"- Focus only on non-variant/permanent features such as color, shape, pattern, text for objects/buildings and facial features for people.\n"
-        f"- If you are uncertain then you can refer the textual description of the second image to make a more informed decision.\n"
+        f"- Compare the first image with the second image and answer the following question: "
+        f"{test_question}\n"
+        f"- **Ignore superficial details** such as clothing, accessories, pose variations, or "
+        f"surrounding elements (e.g., people in the background).\n"
+        f"- Focus only on non-variant/permanent features such as color, shape, pattern, text for "
+        f"objects/buildings and facial features for people.\n"
+        f"- If you are uncertain then you can refer the textual description of the second image "
+        f"to make a more informed decision.\n"
         f"**Output (JSON only):**\n{json.dumps(answer_format, indent=2)}"
     )
-    # prompt = (
-    #     f"You are a helpful AI agent specializing in image analysis and object recognition\n\n"
-    #     f"You are provided with a query image along with the name and description of a subject detailed below:\n\n"
-    #     f"{json.dumps(description, indent=2)}\n"
-    #     f"Your Task:\n"
-    #     f"1. Generate an attribute-focused description of the subject in the query image. "
-    #     "Focus on its distinguishing features rather than superficial details such as background, pose, lighting, clothes or accessories.\n"
-    #     f"2. Compare your generated description of the query image with the provided description of the subject and answer the following question:\n"
-    #     f"{test_question}"
-    #     "Output Requirements:\n"
-    #     f"- Your response MUST be a valid JSON exactly matching the format:\n{json.dumps(answer_format)}\n"
-    #     "- Do not include any extra text, explanations, or formatting outside of the JSON.\n"
-    # )
+
     return prompt
 
+
+# ============================================================================
+# Data Preparation
+# ============================================================================
+
+def prepare_test_recognition_items(
+    retrieval_json_path: str,
+    database: Dict[str, Any],
+    data_name: str = "PerVA",
+) -> List[Dict[str, Any]]:
+    """
+    Prepare items for recognition evaluation.
+
+    Each item contains a query-reference pair with a Yes/No ground truth.
+
+    Args:
+        retrieval_json_path: Path to retrieval JSON
+        database: Database with concept descriptions
+        data_name: Dataset name
+
+    Returns:
+        List of prepared item dicts
+    """
+    with open(retrieval_json_path, "r") as f:
+        retrieval_data = json.load(f)
+
+    items: List[Dict[str, Any]] = []
+
+    for entry in tqdm(retrieval_data, desc="Preparing recognition items"):
+        query_path = entry.get("query_path") or entry.get("query")
+        ret_paths = entry.get("retrieved_paths") or entry.get("ret_paths", [])
+        label = entry.get("label", 0)
+        category = entry.get("category", "object")
+
+        if not query_path or not ret_paths:
+            continue
+
+        # Create positive pair (query matches correct reference)
+        correct_ref_path = ret_paths[label] if label < len(ret_paths) else ret_paths[0]
+
+        # Get reference info from database
+        concept_key = database.get("path_to_concept", {}).get(correct_ref_path)
+        if concept_key and concept_key in database.get("concept_dict", {}):
+            ref_info = database["concept_dict"][concept_key].get("info", {})
+        else:
+            ref_info = {
+                "category": category,
+                "general": ["Unknown"],
+                "distinct features": ["Unknown"]
+            }
+
+        # Positive sample
+        question = f"Is the {category} in Image 1 the same as the {category} in Image 2?"
+        items.append({
+            "query_path": query_path,
+            "ret_path": correct_ref_path,
+            "ret_info": ref_info,
+            "question": question,
+            "solution": "Yes",
+        })
+
+        # Optionally add negative samples (different reference)
+        for i, rp in enumerate(ret_paths):
+            if i == label:
+                continue
+            # Get info for this (incorrect) reference
+            neg_concept_key = database.get("path_to_concept", {}).get(rp)
+            if neg_concept_key and neg_concept_key in database.get("concept_dict", {}):
+                neg_ref_info = database["concept_dict"][neg_concept_key].get("info", {})
+            else:
+                neg_ref_info = ref_info  # Fallback
+
+            items.append({
+                "query_path": query_path,
+                "ret_path": rp,
+                "ret_info": neg_ref_info,
+                "question": question,
+                "solution": "No",
+            })
+            break  # Only add one negative per query
+
+    return items
+
+
+# ============================================================================
+# Inference Loop
+# ============================================================================
 
 def run_inference_loop(
     model,
@@ -84,239 +182,230 @@ def run_inference_loop(
     temperature: float = 1e-6,
     batch_size: int = 8,
     max_new_tokens: int = 128,
-    device: torch.device | None = None,
-) -> Tuple[List[Dict[str, Any]], float]:
+    device: torch.device = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Run model on the prepared items and return (results_list, accuracy).
-    results_list contains dicts with keys: image_path, problem, solution, solution_desc,
-    ret_paths, response (raw model text), pred_name (cleaned)
+    Run recognition inference over items.
+
+    Args:
+        model: The loaded model
+        processor: The model processor
+        items: Iterable of prepared item dicts
+        temperature: Generation temperature
+        batch_size: Batch size
+        max_new_tokens: Maximum tokens to generate
+        device: Torch device
+
+    Returns:
+        Tuple of (results_list, metrics_dict)
     """
     dataset = DictListDataset(list(items))
-    # dataset = dataset[:10]
     loader = DataLoader(
-        dataset, batch_size=batch_size, shuffle=False, collate_fn=dict_collate_fn, num_workers=4
+        dataset, batch_size=batch_size, shuffle=False,
+        collate_fn=dict_collate_fn, num_workers=4
     )
 
     results: List[Dict[str, Any]] = []
-    correct_yes, correct_no, total_yes, total_no = 0, 0, 0, 0
+    correct_yes, correct_no = 0, 0
+    total_yes, total_no = 0, 0
 
-    # device inference guidance (model may already be on device)
     if device is None:
-        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        device = get_device()
 
-    for batch in tqdm(loader, desc="Generating model responses"):
-        # load images lazily if not provided
+    for batch in tqdm(loader, desc="Running recognition inference"):
+        # Load images
         images, ret_images = [], []
         for it in batch:
-            images.append(Image.open(it["query_path"]).convert("RGB"))
-            ret_images.append(Image.open(it["ret_path"]).convert("RGB"))  # FIX: was query_path, should be ret_path
-            
-        problems = [get_prompt(it['ret_info'], it["question"]) for it in batch]  # FIX: added missing comma
+            try:
+                images.append(Image.open(it["query_path"]).convert("RGB"))
+            except Exception:
+                images.append(Image.new("RGB", (224, 224)))
+            try:
+                ret_images.append(Image.open(it["ret_path"]).convert("RGB"))
+            except Exception:
+                ret_images.append(Image.new("RGB", (224, 224)))
+
+        problems = [get_prompt(it['ret_info'], it["question"]) for it in batch]
         solutions = [it["solution"] for it in batch]
-        paths = [it.get("query_path") for it in batch]  # FIX: changed "path" to "query_path"
-        ret_paths = [it.get("ret_path", []) for it in batch]
+        query_paths = [it["query_path"] for it in batch]
+        ref_paths = [it["ret_path"] for it in batch]
+
         try:
-            responses = speaker_describes_batch(model, processor, problems, images, ret_images, temperature=temperature, max_new_tokens=max_new_tokens)
+            responses = speaker_describes_batch(
+                model, processor, problems, images, ret_images,
+                temperature=temperature, max_new_tokens=max_new_tokens
+            )
         except Exception:
-            LOG.exception("Failed generating model responses for current batch; skipping.")
-            # append placeholders for each item in batch and continue
-            for path, gt, rp in zip(paths, solutions, ret_paths):  # FIX: removed sol_desc from unpacking
-                results.append(
-                    {
-                        "image_path": path,
-                        "problem": None,
-                        "solution": gt,
-                        "ret_path": rp,  # FIX: added ret_path
-                        "response": "",
-                        "pred_name": "",
-                    }
-                )
+            LOG.exception("Failed generating responses for batch; skipping.")
+            for qp, sol, rp in zip(query_paths, solutions, ref_paths):
+                results.append({
+                    "query_path": qp,
+                    "ref_path": rp,
+                    "problem": None,
+                    "solution": sol,
+                    "response": "",
+                    "pred": "",
+                    "correct": False,
+                })
+                if sol.lower() == "yes":
+                    total_yes += 1
+                else:
+                    total_no += 1
             continue
 
-        # speaker_describes_batch may return a single string when batch_size==1
+        # Normalize responses
         if isinstance(responses, str):
             responses = [responses]
-        # clean predicted "Answer" using provided utility
-        predictions = [] 
+
+        # Extract predictions
+        predictions = []
         for resp in responses:
             try:
                 if isinstance(resp, list):
                     resp = resp[0]
                 term = extract_reasoning_answer_term(resp, "Answer")
-                predictions.append(term.strip())
+                predictions.append(term.strip() if term else "")
             except Exception:
-                LOG.exception("Failed to extract answer term from model response; using empty string")
                 predictions.append("")
 
-        for path, gt, rp, resp, pred in zip(paths, solutions, ret_paths, responses, predictions):  # FIX: added ret_paths to zip
-            if gt.lower() == 'yes':
-                correct_yes += int(pred.lower() == gt.lower())
-                total_yes +=1
-            elif gt.lower() == 'no':
-                correct_no += int(pred.lower() == gt.lower())
-                total_no +=1
-            is_correct = gt.lower() in pred.lower()
-            # correct_count += is_correct
-            results.append(
-                {
-                    "image_path": path,
-                    "problem": resp if resp else None,
-                    "solution": gt,
-                    "ret_path": rp,  # FIX: added ret_path
-                    "response": resp,
-                    "pred": pred,
-                    "is_correct": bool(is_correct),
-                }
-            )
+        # Accumulate results
+        for qp, sol, rp, prob, resp, pred in zip(
+            query_paths, solutions, ref_paths, problems, responses, predictions
+        ):
+            pred_lower = pred.lower().strip()
+            sol_lower = sol.lower().strip()
 
-        # free cuda mem (harmless if CPU)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    positive_accuracy = correct_yes / total_yes if total_yes > 0 else 0.0
-    negative_accuracy = correct_no / total_no if total_no > 0 else 0.0
-    weighted_accuracy = 0.5*(positive_accuracy + negative_accuracy)
+            is_correct = pred_lower == sol_lower
+
+            if sol_lower == "yes":
+                total_yes += 1
+                if is_correct:
+                    correct_yes += 1
+            else:
+                total_no += 1
+                if is_correct:
+                    correct_no += 1
+
+            results.append({
+                "query_path": qp,
+                "ref_path": rp,
+                "problem": prob,
+                "solution": sol,
+                "response": resp[0] if isinstance(resp, list) else resp,
+                "pred": pred,
+                "correct": is_correct,
+            })
+
+        clear_cuda_cache()
+
+    total = total_yes + total_no
+    correct = correct_yes + correct_no
+    accuracy = correct / total if total > 0 else 0.0
+
     metrics = {
-        "pos_acc":positive_accuracy,
-        "neg_acc":negative_accuracy,
-        "weighted":weighted_accuracy,
-        "correct_yes":correct_yes,
-        "correct_no":correct_no,
-        "total_yes":total_yes,
-        "total_no":total_no
+        "accuracy": accuracy,
+        "correct": correct,
+        "total": total,
+        "accuracy_yes": correct_yes / total_yes if total_yes > 0 else 0.0,
+        "accuracy_no": correct_no / total_no if total_no > 0 else 0.0,
+        "total_yes": total_yes,
+        "total_no": total_no,
     }
+
     return results, metrics
 
 
-def prepare_test_recognition_items(
-    args,
-    database_json: Path,
-    catalog_json: Path,
-    category: str,
-    ):
-    LOG.info("Loading database from: %s", database_json)  # FIX: changed catalog_json to database_json
-    with open(database_json, 'r') as f:
-        database = json.load(f)
-    LOG.info("Loading dataset from: %s", catalog_json)
-    dataset = SimpleImageDataset(
-        json_path=catalog_json,
-        category=category,
-        split="test",
-        seed=args.seed,
-        data_name=args.data_name
-    )
-    recognition_samples = []
-    concept_names = sorted({item['name'] for item in dataset})
-    for sub_item in dataset:
-        query_path = sub_item["path"]
-        query_name = sub_item["name"]
-        for concept_name in concept_names:
-            # if concept_name == query_name:
-            ret_image_path = database["concept_dict"][f'<{concept_name}>']["image"]
-            if isinstance(database["concept_dict"][f'<{concept_name}>']["image"], list):  # FIX: changed concept to concept_name
-                ret_path = database["concept_dict"][f'<{concept_name}>']["image"][0]  # FIX: changed concept to concept_name
-            else:  # FIX: added else clause for non-list case
-                ret_path = database["concept_dict"][f'<{concept_name}>']["image"]
-            ret_info = database["concept_dict"][f'<{concept_name}>']["info"]  # FIX: changed tag to concept_name, info to ret_info
-            sample = {
-                'concept_name': concept_name,
-                "name": query_name,
-                "query_path": query_path,
-                "ret_path": ret_path,  # FIX: changed comma to colon
-                "ret_info": ret_info,    
-                "question": f"Is <{concept_name}> in the first image? Answer in yes or no.",
-                "solution": 'yes' if query_name == concept_name else 'no'
-            }
-            recognition_samples.append(sample)
-    return recognition_samples
+# ============================================================================
+# CLI
+# ============================================================================
 
-def parse_args():  # FIX: removed -> argparse.Namespace type hint (argparse not imported yet)
+def parse_args():
     import argparse
+    parser = argparse.ArgumentParser(description="Binary recognition evaluation")
 
-    parser = argparse.ArgumentParser(description="Reasoning-based personalization evaluation")
-    parser.add_argument("--data_name", type=str, default="YoLLaVA")
-    parser.add_argument("--catalog_file", type=str, default="main_catalog_seed_23.json")
-    parser.add_argument("--category", type=str, default="all")
-    parser.add_argument("--concept_name", type=str, default="bo")
-    parser.add_argument("--seed", type=int, default=23)
-    parser.add_argument("--db_type", type=str, default="original_7b")
-    parser.add_argument("--model_type", type=str, default="original_7b")
-    parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--max_new_tokens", type=int, default=128)
-    parser.add_argument("--temperature", type=float, default=0.7,
-                       help='generation temperature')
-    parser.add_argument("--output_dir", type=str, default="results")
+    add_common_args(parser)
+
+    # Task-specific args
+    parser.add_argument("--retrieval_json", type=str, default=None,
+                        help="Path to retrieval JSON. If not set, auto-generated from args.")
+
     return parser.parse_args()
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s: %(message)s"
+    )
     args = parse_args()
 
     set_seed(args.seed)
     LOG.info("Args: %s", args)
 
-    manifests_dir = Path("manifests") / args.data_name
-    database_json = Path("outputs") / args.data_name / args.category / f"seed_{args.seed}" / f"database_{args.db_type}.json"
-    catalog_json = str(manifests_dir / args.catalog_file)
-    if not database_json.exists():
-        LOG.error("Descriptions file not found at %s", database_json)
-        raise FileNotFoundError(f"Descriptions file not found: {database_json}")
+    # Load database
+    database_path = get_database_path(
+        args.data_name, args.category, args.seed, args.db_type
+    )
+    LOG.info("Loading database from %s", database_path)
+    database = load_database(database_path)
 
-    # FIX: retriever was never defined but used in prepare_test_recognition_items
-    # You need to initialize it here, e.g.:
-    
-    # prepare items to run inference on
-    items = prepare_test_recognition_items(
-        args,
-        database_json, 
-        catalog_json,
-        args.category)
-    LOG.info("Prepared %d test items", len(items))
-    if args.concept_name != '':
-        items = [item for item in items if item.get("concept_name") == args.concept_name]  # FIX: changed "solution" to "concept_name"
-    # load model
-    model_paths = {
-        'original_2b': "Qwen/Qwen2-VL-2B-Instruct",
-        'original_7b': "Qwen/Qwen2-VL-7B-Instruct",
-        # 'lora_finetuned_3b_base': f"../Visual-RFT/share_models/Qwen2.5-VL-3B-Instruct_GRPO_lewis_LoRA_LISTENER_PerVA_all_train_seed_{args.seed}_K_3_base_3b",
-        # 'lora_finetuned_7b_base': f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LoRA_LISTENER_PerVA_all_train_seed_{args.seed}_K_3_base_7b"    
-    }
+    # Get model configuration
+    try:
+        model_config = get_model_config(
+            args.model_type, dataset=args.data_name, seed=args.seed
+        )
+    except ValueError:
+        LOG.warning("Model type '%s' not in config, using as direct path", args.model_type)
+        model_config = {
+            'path': args.model_type,
+            'use_peft': 'lora' in args.model_type.lower(),
+        }
 
-    if args.model_type in ['original_2b', 'original_7b']:
-        model_path = model_paths[args.model_type]
-    else:
-        model_path = model_paths.get((args.model_type, args.k_retrieval))
-        # model_path = f"../Visual-RFT/share_models/Qwen2.5-VL-7B-Instruct_GRPO_lewis_LISTENER_prompt2_epoch2_YoLLaVA_all_train_seed_23"
+    model_path = model_config['path']
+    use_peft = model_config['use_peft']
+
     LOG.info("Loading model from %s", model_path)
-    use_peft = False
-    if args.model_type.startswith('lora_finetuned'):
-        use_peft = True
     model, processor = setup_model(model_path, use_peft=use_peft)
-    # run inference
+
+    # Determine retrieval JSON path
+    if args.retrieval_json:
+        retrieval_json_path = args.retrieval_json
+    else:
+        retrieval_json_path = (
+            Path("outputs") / args.data_name / args.category /
+            f"seed_{args.seed}" / "retrieval_top3.json"
+        )
+
+    LOG.info("Loading retrieval data from %s", retrieval_json_path)
+
+    # Prepare items
+    items = prepare_test_recognition_items(
+        retrieval_json_path=str(retrieval_json_path),
+        database=database,
+        data_name=args.data_name,
+    )
+    LOG.info("Prepared %d recognition items", len(items))
+
+    # Run inference
     results, metrics = run_inference_loop(
-        model,
-        processor,
-        items,
+        model, processor, items,
         temperature=args.temperature,
         batch_size=args.batch_size,
         max_new_tokens=args.max_new_tokens,
     )
 
-    # save results & stats
+    # Save results
     outdir = Path(args.output_dir) / args.data_name / args.category
-    if args.concept_name != '':
-        outdir = Path(outdir) / args.concept_name / f'seed_{str(args.seed)}'
+    if args.concept_name:
+        outdir = outdir / args.concept_name
+    outdir = outdir / f"seed_{args.seed}"
     outdir.mkdir(parents=True, exist_ok=True)
+
     outpath = outdir / f"recognition_model_{args.model_type}_db_{args.db_type}.json"
-    output = {
-        "metrics":metrics,
-        "results": results
-        }
-    with outpath.open("w", encoding="utf-8") as fh:
-        json.dump(output, fh, indent=2, ensure_ascii=False)
-    
-    LOG.info("Saved results to %s", outpath)
-    # LOG.info("metrics: %.4f", metrics)
+    save_results(results, metrics, vars(args), outpath)
+
+    LOG.info("Overall Accuracy: %.4f (%d/%d)", metrics['accuracy'], metrics['correct'], metrics['total'])
+    LOG.info("Accuracy (Yes): %.4f, Accuracy (No): %.4f", metrics['accuracy_yes'], metrics['accuracy_no'])
 
 
 if __name__ == "__main__":
