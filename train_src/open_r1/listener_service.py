@@ -10,19 +10,25 @@ Requirements:
  - Put this file on the same machine that can access image paths.
 """
 
-import os
-import time
-import threading
+# Standard library
 import argparse
+import gc
+import os
+import threading
+import time
 from typing import List, Any, Optional
-from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException
-import uvicorn
-import torch, gc
-from PIL import Image
-from transformers import Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, AutoProcessor
-from qwen_vl_utils import process_vision_info  # your util that prepares vision inputs
+
+# Third-party
+import torch
 import torch.nn.functional as F
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from PIL import Image
+from pydantic import BaseModel
+from transformers import Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, AutoProcessor
+
+# Local/project-specific
+from qwen_vl_utils import process_vision_info
 
 # configure concurrency via env (default 1)
 INFERENCE_CONCURRENCY = int(os.environ.get("INFERENCE_CONCURRENCY", "1"))

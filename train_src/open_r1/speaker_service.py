@@ -1,24 +1,31 @@
+# Standard library
+import argparse
+import gc
+import json
 import os
 import re
+import sys
 import threading
 import time
-import torch, gc
-import torch.nn.functional as F
-from transformers import Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, AutoProcessor
-from qwen_vl_utils import process_vision_info
-import argparse
-from PIL import Image
-import json
-from typing import List, Any, Optional
-from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException
-import uvicorn
 from contextlib import nullcontext
-from deepspeed.runtime.zero import GatheredParameters
-import sys
+from typing import List, Any, Optional
 
+# Modify path BEFORE other imports
 sys.path.insert(0, 'src/virft/src/')
-from open_r1.listener_service import ListenerService, BaseModel
+
+# Third-party
+import torch
+import torch.nn.functional as F
+import uvicorn
+from deepspeed.runtime.zero import GatheredParameters
+from fastapi import FastAPI, HTTPException
+from PIL import Image
+from pydantic import BaseModel
+from transformers import Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, AutoProcessor
+
+# Local/project-specific
+from open_r1.listener_service import ListenerService
+from qwen_vl_utils import process_vision_info
 
 # configure concurrency via env (default 1)
 INFERENCE_CONCURRENCY = int(os.environ.get("INFERENCE_CONCURRENCY", "1"))

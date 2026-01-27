@@ -1,31 +1,33 @@
+# Standard library
+import json
 import os
 import re
-import torch
-import torch.nn as nn
-from PIL import Image
-import requests
-
-from datetime import datetime
+import string
+import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
-from datasets import load_dataset, load_from_disk
-from datasets import DatasetDict, Dataset
-from transformers import Qwen2VLForConditionalGeneration
-
-from math_verify import parse, verify
-import sys
+# Modify path BEFORE other third-party imports
 sys.path.insert(0, 'src/virft/src/')
-from open_r1.trainer import Qwen2VLGRPOTrainer, Qwen2VLGRPOVLLMTrainer
-from open_r1.logger import PredictionLogger
+
+# Third-party
+import requests
+import torch
+import torch.distributed as dist
+import torch.nn as nn
+from datasets import DatasetDict, Dataset, load_dataset, load_from_disk
+from PIL import Image
+from transformers import Qwen2VLForConditionalGeneration
 from trl import GRPOConfig, GRPOTrainer, ModelConfig, ScriptArguments, TrlParser, get_peft_config
 
+# Local/project-specific
 from listener import Listener
-import json
-import string
-logger = PredictionLogger(log_path=os.getenv("LOG_PATH"))
+from math_verify import parse, verify
+from open_r1.logger import PredictionLogger
+from open_r1.trainer import Qwen2VLGRPOTrainer, Qwen2VLGRPOVLLMTrainer
 
-import torch.distributed as dist
+logger = PredictionLogger(log_path=os.getenv("LOG_PATH"))
 
 def extract_answer_content(text):
     """
