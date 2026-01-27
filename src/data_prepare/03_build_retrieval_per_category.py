@@ -11,6 +11,7 @@ import numpy as np
 from scipy.spatial.distance import cdist
 from transformers import CLIPTextModel, CLIPVisionModel, CLIPModel, CLIPProcessor
 import random
+import re
 from collections import defaultdict
 
 def load_image(image_file):
@@ -47,7 +48,7 @@ class HierarchicalClipRetriever():
         self.clip_model = CLIPModel.from_pretrained(self.clip_model_name).to(self.device)
         self.feature_extractor = CLIPProcessor.from_pretrained(self.clip_model_name)
         self.root = os.path.dirname(data_dir)
-        self.catalog_path = os.path.join(data_dir, catalog_file)
+        self.catalog_path = os.path.join(catalog_file)
         self.class_index = faiss.IndexFlatIP(embed_dim)  # Class mean embeddings
         self.image_index = faiss.IndexFlatIP(embed_dim)  # Individual image embeddings
         self.with_negative = with_negative
@@ -323,7 +324,7 @@ def main():
     # seed = int(args.catalog_file.split('_')[-1].split('.')[0])
     args.dataset = os.path.basename(args.out_dir)
     seed = args.seed
-    catalog_path = os.path.join(args.root, args.catalog_file)
+    catalog_path = os.path.join(args.catalog_file)
     with open(catalog_path, 'r') as f:
         data = json.load(f)
     category = args.category
@@ -342,12 +343,12 @@ def main():
         with_negative=with_negative)
     out_path = f'{args.out_dir}/{category}/seed_{seed}/'
     class_mappings_json = "class_mappings_with_neg.json" if with_negative else "class_mappings.json"
-    if not os.path.exists(os.path.join(out_path, class_mappings_json)):
-        print("Creating Index")
-        retriever._create_hierarchical_index(category, seed)
-    else:
-        print("Loading Index")
-        retriever._load_hierarchical_index(category, seed)
+    # if not os.path.exists(os.path.join(out_path, class_mappings_json)):
+    print("Creating Index")
+    retriever._create_hierarchical_index(category, seed)
+    # else:
+    #     print("Loading Index")
+    #     retriever._load_hierarchical_index(category, seed)
     concept_list = []
     
     for concept in tqdm(concepts):
@@ -366,22 +367,20 @@ def main():
                 'category':batch['category'],
             })
     K = args.distractors + 1
-    # Determine save_file suffix based on catalog_file name for clarity and flexibility
+    # Determine save_file suffix based on catalog_file name
     base_catalog = os.path.basename(args.catalog_file)
-    if f"train_combined_concepts_subset_30_seed_{args.seed}.json" == base_catalog or f"validation_combined_concepts_subset_30_seed_{args.seed}.json" == base_catalog:
-        split_tag = "subset_30"
-    elif f"train_combined_concepts_subset_20_seed_{args.seed}.json" == base_catalog or f"validation_combined_concepts_subset_20_seed_{args.seed}.json" == base_catalog: 
-        split_tag = "subset_20"
-    else:
-        import re
-        match = re.search(r'subset_(\d+)', base_catalog)
-        split_tag = f"subset_{match.group(1)}" if match else "subset_unknown"
-    if base_catalog.startswith('train'):
-        save_file = f'retrieval_top{K}_{split_tag}.json'
-    elif base_catalog.startswith("validation"):
+    subset_match = re.search(r'subset_(\d+)', base_catalog)
+    split_tag = f"subset_{subset_match.group(1)}" if subset_match else ""
+
+    if base_catalog.startswith("validation") and split_tag:
         save_file = f'val_retrieval_top{K}_{split_tag}.json'
+    elif split_tag:
+        save_file = f'retrieval_top{K}_{split_tag}.json'
+    else:
+        save_file = f'retrieval_top{K}.json'
+
     if args.easy_pos_prob != 0.0:
-        save_file = save_file.split('.')[0] + f'_easy_{args.easy_pos_prob}' + '.json'
+        save_file = save_file.replace('.json', f'_easy_{args.easy_pos_prob}.json')
     category_json_path = os.path.join(args.out_dir, category, f'seed_{seed}', save_file)
     with open(category_json_path, 'w') as f:
         json.dump(concept_list, f, indent=2)

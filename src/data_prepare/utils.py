@@ -13,6 +13,8 @@ def load_json(path: Path) -> Dict[str, Any]:
 
 def save_json(data: Dict[str, Any], path: Path) -> None:
     """Save data to JSON file with pretty formatting."""
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, ensure_ascii=False)
 

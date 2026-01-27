@@ -58,7 +58,7 @@ def build_catalog_from_explicit_splits(data_root: Path, train_dirname: str, test
                 k = max(1, min(num_train, n))
                 shuffled = train_list.copy()
                 random.shuffle(shuffled)
-                train_list = shuffled[:k]
+                train_list = shuffled[:n]
             sdir = test_cat_dir / concept
             if sdir.exists():
                 test_list = gather_images(sdir, relative_to=base)
@@ -121,8 +121,8 @@ def parse_args():
     p.add_argument("--num_train", type=int, default=None,
                    help="If set, use exact number of images per concept for train (overrides fraction).")
     p.add_argument("--seed", type=int, default=42, help="Random seed for deterministic splits.")
-    p.add_argument("--train_dirname", type=str, default="train", help="Name of train split folder (default 'train_').")
-    p.add_argument("--test_dirname", type=str, default="test", help="Name of test split folder (default 'test_').")
+    p.add_argument("--train_dirname", type=str, default="train_", help="Name of train split folder (default 'train_').")
+    p.add_argument("--test_dirname", type=str, default="test_", help="Name of test split folder (default 'test_').")
     return p.parse_args()
 
 
@@ -139,7 +139,6 @@ def main():
     # check for explicit train_/test_ layout you described
     train_dir = data_root / args.train_dirname
     test_dir = data_root / args.test_dirname
-
     if train_dir.exists() or test_dir.exists():
         print(f"Detected explicit split layout under {data_root} using '{args.train_dirname}' and '{args.test_dirname}'.")
         catalog = build_catalog_from_explicit_splits(data_root, args.train_dirname, args.test_dirname, relative, args.num_train)

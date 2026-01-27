@@ -82,7 +82,6 @@ def randomized_search(flat, k, target, iterations=20000, rng=None, require_categ
     # If require_category_coverage, ensure at least one concept from each category is present
     categories = list({c for c,_,_,_ in flat})
     n_categories = len(categories)
-    import pdb;pdb.set_trace()
     for it in range(iterations):
         # sample k unique indices
         chosen_idx = rng.sample(indices, k)
@@ -134,7 +133,7 @@ def greedy_closest(flat, k, target):
                 break
     return chosen, abs(total - target)
 
-def write_outputs(selection, k, target, out_prefix="subset"):
+def write_outputs(selection, k, target, seed_val, out_prefix="subset"):
     # selection: list of tuples (category,concept,n,filenames)
     # Build nested structure but include only filenames (train)
     nested = {}
@@ -143,8 +142,8 @@ def write_outputs(selection, k, target, out_prefix="subset"):
         nested.setdefault(category, {})[concept] = {"train": files}
         all_files.extend(files)
 
-    out_json = f"{out_prefix}_{k}_best.json"
-    out_list = f"{out_prefix}_{k}_best_list.txt"
+    out_json = f"manifests/PerVA/train_combined_concepts_{out_prefix}_{k}_seed_{seed_val}.json"
+    out_list = f"manifests/PerVA/{out_prefix}_{k}_best_list.txt"
 
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(nested, f, indent=2, ensure_ascii=False)
@@ -168,7 +167,7 @@ def main():
 
     with open(args.input, "r", encoding="utf-8") as f:
         data = json.load(f)
-
+    seed_val = args.input.split("_")[-1].split(".")[0]
     flat_raw = flatten_concepts(data)
     # convert to (category, concept, n, files_list)
     flat = [(categ, conc, n, files) for categ, conc, n, files in flat_raw if n > 0]
@@ -220,8 +219,7 @@ def main():
 
         # final selection: convert to (cat,concept,n,files)
         final_sel = [(c, concept, len(files), files) for c, concept, n, files in chosen]
-        import pdb;pdb.set_trace()
-        out_json, out_list, out_count = write_outputs(final_sel, k, args.target_images, out_prefix=args.out_prefix)
+        out_json, out_list, out_count = write_outputs(final_sel, k, args.target_images, seed_val, out_prefix=args.out_prefix)
         print(f"Chosen method: {method}")
         print(f"Wrote JSON -> {out_json}")
         print(f"Wrote file list -> {out_list}")

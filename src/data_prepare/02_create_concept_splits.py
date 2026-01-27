@@ -122,7 +122,7 @@ def main():
     parser.add_argument("--input_json", type=str, required=True, help="Path to original dataset JSON")
     parser.add_argument("--out_dir", type=str, default="manifests/PerVA", help="Output directory")
     parser.add_argument("--concept_frac", type=float, default=0.65, help="Fraction of concepts to select for large categories")
-    parser.add_argument("--min_concepts_threshold", type=int, default=3, help="Apply selection only to categories with at least this many concepts")
+    parser.add_argument("--min_concepts_threshold", type=int, default=8, help="Apply selection only to categories with at least this many concepts")
     parser.add_argument("--test_sample_frac", type=float, default=1., help="Fraction (0-1) of original test images to include per selected concept in train_combined")
     parser.add_argument("--max_test_images", type=int, default=200, help="Hard cap on sampled test images per selected concept")
     parser.add_argument("--seed", type=int, default=23, help="Random seed for deterministic selection/sampling")
@@ -142,15 +142,15 @@ def main():
         max_test_images=args.max_test_images,
         seed=args.seed,
     )
-    if args.concept_frac == 0.5:
-        train_name = Path(args.out_dir) / f"train_combined_concepts_subset_30_seed_{args.seed}.json"
-        test_name = Path(args.out_dir) / f"validation_combined_concepts_subset_30_seed_{args.seed}.json"
-    elif args.concept_frac == 0.3:
-        train_name = Path(args.out_dir) / f"train_combined_concepts_subset_20_seed_{args.seed}.json"
-    elif args.concept_frac == 0.65:
-        train_name = Path(args.out_dir) / f"train_combined_concepts_subset_40_seed_{args.seed}.json"
+    # if args.concept_frac == 0.5:
+    train_name = Path(args.out_dir) / f"train_combined_concepts_seed_{args.seed}.json"
+    test_name = Path(args.out_dir) / f"test_combined_concepts_seed_{args.seed}.json"
+    # elif args.concept_frac == 0.3:
+    #     train_name = Path(args.out_dir) / f"train_combined_concepts_subset_20_seed_{args.seed}.json"
+    # elif args.concept_frac == 0.65:
+    #     train_name = Path(args.out_dir) / f"train_combined_concepts_subset_40_seed_{args.seed}.json"
     # # test_name = out_dir / f"test_combined_seed_{args.seed}.json"
-    meta_name = out_dir / f"train_val_combined_metadata_seed_{args.seed}.json"
+    meta_name = out_dir / f"train_test_combined_metadata_seed_{args.seed}.json"
     print(f"Saving file to: {train_name}")
     save_json(train_combined, train_name)
     save_json(test_combined, test_name)
