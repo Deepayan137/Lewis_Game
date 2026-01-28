@@ -26,7 +26,6 @@ DEFAULT_CLIP_MODEL = 'openai/clip-vit-large-patch14-336'
 
 class HierarchicalClipRetriever():
     def __init__(self, 
-        data_dir,
         out_dir,
         embed_dim = 768,
         # create_index = False, 
@@ -40,30 +39,23 @@ class HierarchicalClipRetriever():
         
         self.device = device
         self.batch_size = batch_size
-        self.data_dir = data_dir
         self.out_dir = out_dir
         self.split = split
         self.vis_feat_extractor = vis_feat_extractor
         self.clip_model_name = clip_model_name
         self.clip_model = CLIPModel.from_pretrained(self.clip_model_name).to(self.device)
         self.feature_extractor = CLIPProcessor.from_pretrained(self.clip_model_name)
-        self.root = os.path.dirname(data_dir)
         self.catalog_path = os.path.join(catalog_file)
         self.class_index = faiss.IndexFlatIP(embed_dim)  # Class mean embeddings
         self.image_index = faiss.IndexFlatIP(embed_dim)  # Individual image embeddings
         self.with_negative = with_negative
-        # if create_index:
-        #     self._create_hierarchical_index()
-        # else:
-        #     self._load_hierarchical_index()
     
     def _create_hierarchical_index(self, category, seed):
         """Create both class-level and image-level indices"""
         with open(self.catalog_path, 'r') as f:
             data = json.load(f)
-        # category = os.path.basename(self.data_dir)
         dir_names = data[category].keys()
-        print(f"Creating hierarchical database from {self.data_dir}")
+        print(f"Creating hierarchical database")
         os.makedirs(os.path.join(self.out_dir, category), exist_ok=True)
         self.class_id2name = {}  # class_id -> class_name
         self.image_id2info = {}  # image_id -> {'path': path, 'class_name': name, 'class_id': id}
@@ -310,32 +302,27 @@ class HierarchicalClipRetriever():
 
 def main():
     parser = argparse.ArgumentParser(description="Create training batches for Lewis game")
-    parser.add_argument('--root', type=str, default="manifests/PerVA")
     parser.add_argument('--category', type=str, default="clothe")
     parser.add_argument('--split', type=str, default="train")
-    parser.add_argument('--catalog_file', type=str, default="train_catalog_seed_23.json")
+    parser.add_argument('--catalog_file', type=str, default="manifests/PerVA/train_combined_concepts_seed_23.json")
     parser.add_argument('--distractors', type=int, default=2)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--out_dir', type=str, default='outputs/PerVA', help='Optional output directory (defaults to --root)')
+    parser.add_argument('--out_dir', type=str, default='outputs/PerVA', help='Optional output directory')
     parser.add_argument('--random_negative', action='store_true', default=False, help='Use random negative sampling (default: False)')
     parser.add_argument('--with_negative', action='store_true', default=False, help='use negatives sourced from LAION')
     parser.add_argument('--easy_pos_prob', type=float, default=0.0)
     args = parser.parse_args()
-    # seed = int(args.catalog_file.split('_')[-1].split('.')[0])
     args.dataset = os.path.basename(args.out_dir)
     seed = args.seed
-    catalog_path = os.path.join(args.catalog_file)
+    catalog_path =args.catalog_file
     with open(catalog_path, 'r') as f:
         data = json.load(f)
     category = args.category
     os.makedirs(os.path.join(args.out_dir, category, f'seed_{seed}'), exist_ok=True)
     all_data = []
-    # for category in categories:
-    #     if category in ['clothe']:
     concepts = data[category].keys()
     with_negative = args.with_negative
     retriever = HierarchicalClipRetriever(
-        data_dir=args.root,
         out_dir=args.out_dir,
         catalog_file=args.catalog_file,
         split=args.split,
@@ -343,19 +330,12 @@ def main():
         with_negative=with_negative)
     out_path = f'{args.out_dir}/{category}/seed_{seed}/'
     class_mappings_json = "class_mappings_with_neg.json" if with_negative else "class_mappings.json"
-    # if not os.path.exists(os.path.join(out_path, class_mappings_json)):
     print("Creating Index")
     retriever._create_hierarchical_index(category, seed)
-    # else:
-    #     print("Loading Index")
-    #     retriever._load_hierarchical_index(category, seed)
     concept_list = []
-    
     for concept in tqdm(concepts):
         selection_strategy = 'most_similar'
         image_paths = data[category][concept][args.split]
-        # if args.dataset == 'PerVA' and len(image_paths) > 5:
-        #     image_paths = random.sample(image_paths, 5)
         for image_path in image_paths:
             remaining_paths = [item for item in data[category][concept][args.split] if item != image_path]
             batch = retriever.create_training_batch(image_path, remaining_paths, category, num_distractors=args.distractors, 
@@ -367,7 +347,6 @@ def main():
                 'category':batch['category'],
             })
     K = args.distractors + 1
-    # Determine save_file suffix based on catalog_file name
     base_catalog = os.path.basename(args.catalog_file)
     subset_match = re.search(r'subset_(\d+)', base_catalog)
     split_tag = f"subset_{subset_match.group(1)}" if subset_match else ""

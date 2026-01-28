@@ -48,7 +48,7 @@ from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_f
 from trl.trainer.grpo_config import GRPOConfig
 from trl.trainer.utils import generate_model_card, get_comet_experiment_url
 import sys
-sys.path.insert(0, 'src/virft/src/')
+sys.path.insert(0, 'train_src/')
 # from open_r1.dist_helpers import *
 from open_r1.trainer.speaker_helpers import aggregate_speaker_requests, modify_prompt
 import copy
@@ -388,11 +388,15 @@ class Qwen2VLGRPOTrainer(Trainer):
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+            prompt_inputs["input_ids"] = prompt_ids
+            prompt_inputs["attention_mask"] = prompt_mask
 
         # Generate completions
         with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
             # prompt_inputs['pixel_values'] = prompt_inputs['pixel_values'][None]
-            prompt_completion_ids = unwrapped_model.generate(**prompt_inputs, generation_config=self.generation_config)
+            prompt_completion_ids = unwrapped_model.generate(
+                **prompt_inputs, generation_config=self.generation_config, synced_gpus=False
+            )
 
             prompt_length = prompt_ids.size(1)
             prompt_ids = prompt_completion_ids[:, :prompt_length]

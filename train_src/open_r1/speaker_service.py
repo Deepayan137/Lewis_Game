@@ -11,7 +11,7 @@ from contextlib import nullcontext
 from typing import List, Any, Optional
 
 # Modify path BEFORE other imports
-sys.path.insert(0, 'src/virft/src/')
+sys.path.insert(0, 'train_src/')
 
 # Third-party
 import torch

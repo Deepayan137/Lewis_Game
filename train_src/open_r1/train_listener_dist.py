@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 # Modify path BEFORE other third-party imports
-sys.path.insert(0, 'src/virft/src/')
+sys.path.insert(0, 'train_src/')
 
 # Third-party
 import requests

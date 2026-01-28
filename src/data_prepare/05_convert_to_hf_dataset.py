@@ -3,6 +3,7 @@ import random
 import string
 import json
 import argparse
+import re
 from pathlib import Path
 from datasets import Dataset, DatasetDict
 from tqdm.auto import tqdm
@@ -11,7 +12,7 @@ import sys
 sys.path.insert(0, 'src/')
 from defined import yollava_reverse_category_dict, myvlm_reverse_category_dict
 # fixed base save directory per your request
-BASE_SAVE_DIR = "/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_data"
+BASE_SAVE_DIR = "share_data"
 
 
 def _resolve_path(root: str, p: str) -> str:
@@ -23,8 +24,8 @@ def _resolve_path(root: str, p: str) -> str:
     return os.path.join(root, p)
 
 
-def json_to_dataset_dict(ret_json, root, category, seed, dataset, with_negative):
-    retrieval_json_path = os.path.join(root, category, f'seed_{seed}', ret_json)
+def json_to_dataset_dict(input_filename, with_negative):
+    retrieval_json_path = input_filename 
     with open(retrieval_json_path, "r") as f:
         data = json.load(f)
     rows = []
@@ -36,9 +37,9 @@ def json_to_dataset_dict(ret_json, root, category, seed, dataset, with_negative)
         if query_path_raw is None:
             # skip malformed entry
             continue
-        query_abs = _resolve_path('/gpfs/projects/ehpc171/ddas/projects/Lewis_Game', query_path_raw)
+        query_abs = _resolve_path('./', query_path_raw)
         # make retrieved absolute where possible
-        retrieved_abs = [_resolve_path('/gpfs/projects/ehpc171/ddas/projects/Lewis_Game', rp) for rp in ret_list]
+        retrieved_abs = [_resolve_path('./', rp) for rp in ret_list]
         # if with_negative:
         # names = [''.join(random.choices(string.ascii_uppercase, k=3)) for _ in range(len(retrieved_abs))]
         names = [string.ascii_uppercase[i] for i in range(len(retrieved_abs))]
@@ -50,25 +51,25 @@ def json_to_dataset_dict(ret_json, root, category, seed, dataset, with_negative)
             print(f"Warning: query image not found: {query_abs}")
 
         # speaker problem prompt (kept similar to your original)
-        if dataset == 'PerVA':
-            concept_name = query_path_raw.split('/')[-3]
-        else:
-            concept_name = query_path_raw.split('/')[-2]
+        # if dataset == 'PerVA':
+        concept_name = query_path_raw.split('/')[-3]
+        # else:
+        #     concept_name = query_path_raw.split('/')[-2]
         
-        if dataset == 'YoLLaVA':
-            category = yollava_reverse_category_dict[concept_name]
-        elif dataset == "MyVLM":
-            category = myvlm_reverse_category_dict[concept_name]
-        elif dataset == 'PerVA':
-            perva_category_map = {
-                'veg': 'vegetable',
-                'decoration': 'decoration object',
-                'retail': 'retail object',
-                'tro_bag': 'trolley bag',
-            }
-            category = perva_category_map.get(concept_name, concept_name)
-        else:
-            category = item.get("category", "object")
+        # if dataset == 'YoLLaVA':
+        #     category = yollava_reverse_category_dict[concept_name]
+        # elif dataset == "MyVLM":
+        #     category = myvlm_reverse_category_dict[concept_name]
+        # elif dataset == 'PerVA':
+        perva_category_map = {
+            'veg': 'vegetable',
+            'decoration': 'decoration object',
+            'retail': 'retail object',
+            'tro_bag': 'trolley bag',
+        }
+        category = perva_category_map.get(concept_name, concept_name)
+        # else:
+        #     category = item.get("category", "object")
         speaker_problem = (
             f'Provide two descriptions of the {category} in the image:\n'
             f'1. A coarse 5-6 word description starting with "A photo of a "\n'
@@ -133,52 +134,25 @@ def save_dataset_dict(ds_dict: DatasetDict, save_dirname: str):
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Convert retrieval JSON to HF Dataset and save to disk.")
-    ap.add_argument("--root", default="outputs")
-    ap.add_argument("--dataset", default="YoLLaVA")
-    ap.add_argument("--category", default="all")
-    ap.add_argument("--ret_json", default="retrieval_top5.json")
+    ap.add_argument("--input_filename", default="outputs/PerVA/all/seed_23/retrieval_top3_subset_30.json")
     ap.add_argument("--seed", type=int, default=23, help="Random seed for reproducibility.")
-    
+    ap.add_argument("--K", type=int, default=3, help="distracors + 1")
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
-    root = os.path.join(args.root, args.dataset)
-    ds = json_to_dataset_dict(args.ret_json, root, args.category, args.seed, args.dataset, with_negative=False)
-    # optionally you could include args.dataset into the save_dirname if that helps naming consistency
+    ds = json_to_dataset_dict(args.input_filename, with_negative=False)
     print_dataset_statistics(ds)
-    # if args.ret_json == "retrieval_top3_with_negative.json":
-    #     save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_K_3_with_neg"
-    # elif args.ret_json == "retrieval_top3_subset_20.json":
-    #============================================
-    subset = None
-    if 'subset_20' in args.ret_json:
-        subset = "subset_20"
-    elif 'subset_30' in args.ret_json:
-        subset = "subset_30"
-    suffix = 'num_samp_300'
-    K=3
-    # suffix = ""
-    # if "_easy_0.5" in args.ret_json:
-    #     suffix = "easy_0.5"
-    # elif "_easy_1.0" in args.ret_json:
-    #     suffix = "easy_1.0"
-    # K=None
-    # if "top2" in args.ret_json:
-    #     K = 2
-    # elif "top5" in args.ret_json:
-    #     K = 5
-    # else:
-    #     K = 3
-
+    subset_match = re.search(r'subset_(\d+)', args.input_filename)
+    subset = f"subset_{subset_match.group(1)}" if subset_match else None
+    sampled_match = re.search(r'sampled_(\d+)', args.input_filename)
+    sampled = f"sampled_{sampled_match.group(1)}" if sampled_match else None
+    save_dirname = f"PerVA_seed_{args.seed}_K_{args.K}"
     if subset:
-        save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_K_{K}_{subset}_{suffix}"
-    else:
-        save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_K_{K}"
-    # elif args.ret_json.startswith("retrieval_top3_easy"):
-    #     easy_fr = '0.5'
-    #     save_dirname = f"{args.dataset}_{args.category}_test_subset_seed_{args.seed}_easy_{easy_fr}_K_3"
+        save_dirname += f"_{subset}"
+    if sampled:
+        save_dirname += f"_{sampled}"
     out = save_dataset_dict(ds, save_dirname)
     print(f"Dataset saved in: {save_dirname}")
     # quick sanity check load

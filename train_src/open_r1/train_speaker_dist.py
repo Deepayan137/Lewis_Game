@@ -11,7 +11,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 # Modify path BEFORE other third-party imports
-sys.path.insert(0, 'src/virft/src/')
+sys.path.insert(0, 'train_src/')
 
 # Third-party
 import requests

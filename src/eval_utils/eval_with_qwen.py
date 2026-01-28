@@ -54,14 +54,16 @@ def main(args):
     """
     # Load the model
     model, tokenizer = setup_model("Qwen/Qwen3-8B")
-
+    out_dir =  args.out
+    if not out_dir:
+        out_dir = Path(args.input).parent
     # Parse input path to generate appropriate output filename
     parsed_input = args.input.split('/')
     data_name, category_name, seed = parsed_input[1], parsed_input[2], parsed_input[3]
     if data_name == 'PerVA':
-        filename = data_name + '_' + f'{category_name}_' + seed + '_' + '_'.join(parsed_input[-1].split('_')[1:])
+        filename = 'loc_state_stats' + '_' + f'{category_name}_' + '_'.join(parsed_input[-1].split('_')[1:])
     else:
-        filename = data_name + '_' + seed + '_' + '_'.join(parsed_input[-1].split('_')[1:])
+        filename = 'loc_state_stats' + '_' + '_'.join(parsed_input[-1].split('_')[1:])
     out_path = Path(args.out) / filename
 
     # Choose operation based on refine mode

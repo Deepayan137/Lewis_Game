@@ -21,7 +21,7 @@ def setup_model(model_name_or_path, use_peft=False, device="cuda"):
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             config.base_model_name_or_path,
             torch_dtype=torch.float16,
-            attn_implementation="flash_attention_2",
+            attn_implementation="sdpa",
             device_map="auto",)
         model = PeftModel.from_pretrained(model, model_name_or_path)
     else:
@@ -29,7 +29,7 @@ def setup_model(model_name_or_path, use_peft=False, device="cuda"):
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_name_or_path,
             torch_dtype=torch.float16,
-            attn_implementation="flash_attention_2",
+            attn_implementation="sdpa",
             device_map="auto"  # Let it automatically distribute
         )  
     model.eval()

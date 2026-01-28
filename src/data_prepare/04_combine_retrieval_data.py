@@ -150,9 +150,9 @@ def main():
         # Auto-generate based on input filename and num_samples
         base = Path(args.input_filename).stem
         if args.num_samples:
-            output_filename = f"{base}_combined_{args.num_samples}.json"
+            output_filename = args.input_filename.split('.json')[0] + f"_sampled_{args.num_samples}.json"
         else:
-            output_filename = f"{base}_combined_all.json"
+            output_filename = f"{args.input_filename}"
 
     output_path = output_dir / output_filename
 

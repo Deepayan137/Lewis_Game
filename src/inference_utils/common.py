@@ -190,7 +190,7 @@ def get_category_for_concept(concept_name: str, dataset: str) -> str:
 # Base paths (can be overridden via environment variables)
 DEFAULT_SHARE_MODELS_DIR = os.environ.get(
     "SHARE_MODELS_DIR",
-    "/gpfs/projects/ehpc171/ddas/projects/Visual-RFT/share_models"
+    "./share_models"
 )
 
 # Model configurations
@@ -206,11 +206,11 @@ MODEL_CONFIGS = {
     },
     # LoRA-finetuned models (path templates)
     'lora_7b_grpo': {
-        'path_template': "{share_models}/Qwen2.5-VL-7B_GRPO_lewis_{dataset}_seed_{seed}_K_3_subset_30_num_samp_300",
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_lewis_PerVA_seed_{seed}_r1024_a64_K_3_subset30",
         'use_peft': True,
     },
     'lora_2b_grpo': {
-        'path_template': "{share_models}/Qwen2.5-VL-2B-Instruct_GRPO_lewis_{dataset}_seed_{seed}",
+        'path_template': "{share_models}/Qwen2-VL-2B-Instruct_GRPO_lewis_PerVA_seed_{seed}",
         'use_peft': True,
     },
 }
@@ -326,7 +326,7 @@ def add_common_args(parser) -> None:
                         help="Maximum new tokens to generate")
     parser.add_argument("--temperature", type=float, default=0.7,
                         help="Generation temperature")
-    parser.add_argument("--output_dir", type=str, default="results",
+    parser.add_argument("--output_dir", type=str, default="outputs",
                         help="Output directory for results")
 
 
