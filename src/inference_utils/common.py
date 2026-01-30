@@ -209,6 +209,14 @@ MODEL_CONFIGS = {
         'path_template': "{share_models}/Qwen2-VL-7B_GRPO_lewis_PerVA_seed_{seed}_r1024_a64_K_3_subset30",
         'use_peft': True,
     },
+    'lora_7b_grpo_500': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_lewis_PerVA_seed_{seed}_r1024_a64_K_3_subset30_sampled_500",
+        'use_peft': True,
+    },
+    'lora_7b_grpo_500_concise': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_lewis_PerVA_seed_{seed}_r1024_a64_K_3_subset30_sampled_500_concise",
+        'use_peft': True,
+    },
     'lora_2b_grpo': {
         'path_template': "{share_models}/Qwen2-VL-2B-Instruct_GRPO_lewis_PerVA_seed_{seed}",
         'use_peft': True,

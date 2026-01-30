@@ -428,7 +428,7 @@ def main():
     )
 
     # Save results
-    outdir = Path(args.output_dir) / args.data_name / args.category
+    outdir = Path('results') / args.data_name / args.category
     if args.concept_name:
         outdir = outdir / args.concept_name
     outdir = outdir / f'seed_{args.seed}'

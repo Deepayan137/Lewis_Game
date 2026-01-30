@@ -86,7 +86,6 @@ def main() -> int:
     results_per_cat_last = None
 
     result_filename = get_result_filename(args)
-
     for category in categories:
         base = get_results_base_path(dataset, category)
 

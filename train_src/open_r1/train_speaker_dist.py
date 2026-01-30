@@ -422,32 +422,41 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
 
 def format_reward(completions, **kwargs):
     """
-    Reward function that checks if the model's response contains:
+    Reward function that checks if the model's response contains all required fields:
     1. <thinking>...</thinking> tag (reasoning process)
-    2. <coarse>...</coarse> tag (5-6 word description starting with "A photo of")
-    3. <detailed>...</detailed> tag (detailed distinguishing description)
-    
+    2. <coarse>...</coarse> tag (5-6 word description)
+    3. <detailed>...</detailed> tag (permanent identity features)
+    4. <state>...</state> tag (pose and body position)
+    5. <location>...</location> tag (background and positioning)
+
     Rewards:
-    - 1.0 if all three tags are present and properly closed
-    - Partial credit options available (see variants below)
+    - Partial credit: 0.2 per field with proper open/close tags
+    - Total: 1.0 if all five fields are present and properly closed
     """
-    # Pattern that requires all three tags with proper closing
-    pattern = r"<thinking>.*?</thinking>\s*<coarse>.*?</coarse>\s*<detailed>.*?</detailed>"
-    
     completion_contents = [completion[0]["content"] for completion in completions]
     rewards = []
-    
+
     for content in completion_contents:
         # Isolate the assistant's response (comes after "assistant\n")
         parts = content.split('assistant\n')
         model_output = parts[-1] if len(parts) > 1 else content
-        
-        # Check if output matches the expected format
-        match = re.fullmatch(pattern, model_output.strip(), re.DOTALL)
-        
-        reward = 1.0 if match else 0.0
-        rewards.append(reward)
-    
+
+        # Check each field individually for partial credit
+        score = 0.0
+
+        if re.search(r'<thinking>.*?</thinking>', model_output, re.DOTALL):
+            score += 0.2
+        if re.search(r'<coarse>.*?</coarse>', model_output, re.DOTALL):
+            score += 0.2
+        if re.search(r'<detailed>.*?</detailed>', model_output, re.DOTALL):
+            score += 0.2
+        if re.search(r'<state>.*?</state>', model_output, re.DOTALL):
+            score += 0.2
+        if re.search(r'<location>.*?</location>', model_output, re.DOTALL):
+            score += 0.2
+
+        rewards.append(score)
+
     return rewards
 
 def length_reward(completions, logger=None, **kwargs):

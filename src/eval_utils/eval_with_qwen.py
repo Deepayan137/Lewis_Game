@@ -111,7 +111,7 @@ def parse_args():
     p.add_argument("--refine", type=str, default='none',
                    choices=['none', 'state', 'location', 'location_and_state'],
                    help="Refinement mode: 'none' for evaluation only, or specify attributes to remove")
-    p.add_argument("--out", required=True, help="Output directory or file path")
+    p.add_argument("--out", help="Output directory or file path")
     p.add_argument("--batch-size", type=int, default=2, help="Batch size (number of descriptions per model call)")
     p.add_argument("--max-tokens", type=int, default=1024, help="Max new tokens for Qwen call")
     p.add_argument("--sleep-between-batches", type=float, default=0.0,

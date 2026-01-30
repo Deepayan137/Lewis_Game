@@ -274,3 +274,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+#python src/eval_utils/aggregate_identification.py --db_type original_7b --model_type original_7b --seed 23 --out reports/ 
