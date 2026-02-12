@@ -129,6 +129,14 @@ def get_result_filename(args: argparse.Namespace) -> str:
     """Generate the expected result filename for identification task."""
     return f"results_model_{args.model_type}_db_{args.db_type}_k_{args.k}.json"
 
+def get_test_concepts(dataset, category, seed):
+    if dataset in ['YoLLaVA', 'MyVLM']:
+        filename = f'{dataset}_concept_list.txt'
+    else:
+        filename = f'OSC_subset_seed_{seed}.txt'
+    with open(filename) as f:
+        concepts = [line.strip().split(',')[1] for line in f.readlines() if line.strip().split(',')[0]==category]
+    return concepts
 
 def main() -> int:
     args = parse_args()
@@ -148,22 +156,20 @@ def main() -> int:
     per_class_global: Dict[str, Dict[str, int]] = {}
 
     result_filename = get_result_filename(args)
-
     for category in categories:
         base = get_results_base_path(dataset, category)
-        concepts = scan_concepts(base)
+        concepts = get_test_concepts(dataset, category, args.seed)
         total_concepts_seen += len(concepts)
-
         for concept in concepts:
             concept_path = get_concept_result_path(base, concept, args.seed, result_filename)
-
             if not concept_path.exists():
-                log_debug(f"{category},{concept},missing_file")
+                log_debug(f"{category},{concept}")
                 continue
-
-            total_concepts_with_file += 1
             records = read_records(concept_path)
-
+            if not records:
+                log_debug(f"{category},{concept}")
+            else:
+                total_concepts_with_file += 1
             # Update global per-class totals
             for r in records:
                 pred = str(r.get("pred_name", "")).strip()
@@ -177,7 +183,6 @@ def main() -> int:
                 if not (str(r.get("pred_name", "")).strip() == "" and
                         str(r.get("solution", "")).strip() == "")
             )
-
             # Per-concept metrics for single-category datasets
             if dataset in ("YoLLaVA", "MyVLM", "DreamBooth"):
                 tp = fp = fn = 0
@@ -199,8 +204,8 @@ def main() -> int:
                 }
 
     # Final aggregation
+    # import pdb;pdb.set_trace()
     macro_metrics = macro_from_per_class(per_class_global)
-
     # Sum TP/FP/FN across classes
     sum_tp = sum(v.get("TP", 0) for v in per_class_global.values())
     sum_fp = sum(v.get("FP", 0) for v in per_class_global.values())

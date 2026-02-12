@@ -179,7 +179,7 @@ def main() -> int:
             results["metrics"]["correct_no"],
             results["metrics"]["total_no"]
         )
-
+    results["metrics"]["weigthted_accuracy"] = (results["metrics"]["pos_accuracy"] + results["metrics"]["neg_accuracy"]) / 2
     # Report and save
     print(f"total concepts: {total_concepts_seen}")
     print(f"results showing for concepts: {total_concepts_with_file}")

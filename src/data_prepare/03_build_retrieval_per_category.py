@@ -49,7 +49,7 @@ class HierarchicalClipRetriever():
         self.class_index = faiss.IndexFlatIP(embed_dim)  # Class mean embeddings
         self.image_index = faiss.IndexFlatIP(embed_dim)  # Individual image embeddings
         self.with_negative = with_negative
-    
+
     def _create_hierarchical_index(self, category, seed):
         """Create both class-level and image-level indices"""
         with open(self.catalog_path, 'r') as f:
@@ -291,7 +291,6 @@ class HierarchicalClipRetriever():
         all_image_paths.extend([d['image_path'] for d in distractors])
         random.shuffle(all_image_paths)
         target_index = all_image_paths.index(new_query_image_path)
-        
         return {
             'image_paths': all_image_paths,
             'target_index': target_index,
@@ -311,6 +310,7 @@ def main():
     parser.add_argument('--random_negative', action='store_true', default=False, help='Use random negative sampling (default: False)')
     parser.add_argument('--with_negative', action='store_true', default=False, help='use negatives sourced from LAION')
     parser.add_argument('--easy_pos_prob', type=float, default=0.0)
+    parser.add_argument('--for_recognition', action='store_true', default=False, help='If set, create data for recognition task')
     args = parser.parse_args()
     args.dataset = os.path.basename(args.out_dir)
     seed = args.seed
@@ -346,6 +346,49 @@ def main():
                 'label':batch['target_index'],
                 'category':batch['category'],
             })
+    if args.for_recognition:
+        import sys;sys.path.append('./src')
+        from inference_utils.prompts import get_description_prompt
+        from inference_utils.common  import PERVA_CATEGORY_MAP
+        from inference_utils.model import setup_model, speaker_describes_batch
+        from inference_utils.cleanup import parse_descriptions
+        from copy import deepcopy
+        from generate_descriptions import process_batch_efficiently
+        from PIL import Image
+        model_name_or_path = "Qwen/Qwen2-VL-7B-Instruct"
+        speaker_model, processor = setup_model(model_name_or_path)
+        # concept_list_copy = concept_list.deepcopy()
+        batch_items = []
+        concept_list = concept_list[:4]
+        num_samples = len(concept_list)
+        num_refs = []
+        for item in concept_list:
+            CATEGORY = PERVA_CATEGORY_MAP.get(item['category'], item['category'])
+            problem = get_description_prompt(CATEGORY)
+            num_refs.append(len(item['ret_paths']))
+            for ref_path in item['ret_paths']:
+            # ref_path = item['ret_paths'][0]
+                name = ref_path.split('/')[-3]
+                batch_items.append({
+                    'image': Image.open(ref_path).convert('RGB'),
+                    'name': name,
+                    'problem': problem,
+                    'path': ref_path
+                })
+        raw_results = process_batch_efficiently(speaker_model, processor, batch_items=batch_items, max_new_tokens=100)
+        idx = 0  # Running counter for indexing raw_results
+        for i in range(num_samples):
+            ret_descs = []
+            for j in range(num_refs[i]):
+                category, ref_path, desc = raw_results[idx]
+                ref_concept_name = ref_path.split('/')[-2]
+                parsed = parse_descriptions(desc[0])
+                coarse = parsed["coarse"] or f"A photo of a {category}"
+                detailed = parsed["detailed"]
+                ref_concept_description = f"Name: {ref_concept_name}\n" + "Description: " + coarse + ". " + detailed
+                ret_descs.append(ref_concept_description)
+                idx += 1  # Increment after processing each reference
+            concept_list[i]['ret_descs'] = ret_descs
     K = args.distractors + 1
     base_catalog = os.path.basename(args.catalog_file)
     subset_match = re.search(r'subset_(\d+)', base_catalog)
@@ -360,7 +403,7 @@ def main():
 
     if args.easy_pos_prob != 0.0:
         save_file = save_file.replace('.json', f'_easy_{args.easy_pos_prob}.json')
-    category_json_path = os.path.join(args.out_dir, category, f'seed_{seed}', save_file)
+    category_json_path = os.path.join(args.out_dir, args.category, f'seed_{seed}', save_file)
     with open(category_json_path, 'w') as f:
         json.dump(concept_list, f, indent=2)
     print(f"{category} data saved at {category_json_path}")
@@ -369,3 +412,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# for i, (cat, ref_path, desc) in enumerate(raw_results):
+        #     parsed = parse_descriptions(desc[0])
+        #     desc_clean = {
+        #         "coarse": [parsed["coarse"] or f"A photo of a {cat}"],
+        #         "detailed": [parsed["detailed"]],
+        #     }
+            # concept_list[i]['for_recognition'] = {"ref_path": ref_path, "descriptions": desc_clean}

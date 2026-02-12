@@ -80,7 +80,6 @@ def process_batch_efficiently(
             max_new_tokens=max_new_tokens,
             num_return_sequences=num_return_sequences,
         )
-
     # Normalize to list if single response
     if isinstance(contents, str):
         contents = [contents]

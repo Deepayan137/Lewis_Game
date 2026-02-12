@@ -25,20 +25,34 @@ def get_description_prompt(category: str) -> str:
     Returns:
         Prompt string for description generation
     """
-    return (
-        f'Provide two descriptions of the {category} in the image:\n'
-        f'1. A coarse 5-6 word description starting with "A photo of a "\n'
-        f'2. A detailed description: Describe the {category} so it can be distinguished from other {category}s. '
-        "Do NOT mention background, location or state. "
-        "If the image contains a person, avoid mentioning clothing or accessories. "
-        f'Write exactly one fluent sentence beginning with "The " and highlighting 3-4 visible distinguishing attributes. '
-        "Keep it concise and natural, without lists or brackets.\n\n"
-        "Output format:\n"
-        "<thinking>Your reasoning</thinking>\n"
-        f"<coarse>A photo of a ...</coarse>\n"
-        f"<detailed>The ...</detailed>"
-    )
-
+    problem = (
+            f'Provide descriptions of the {category} in the image in four parts:\n'
+            f'1. Coarse: A 5-6 word description starting with "A photo of a {category}"\n'
+            f'2. Detailed: Describe ONLY permanent identity features (color, patterns, markings, shape, facial features, eye color, build, etc.). '
+            f'Write one sentence with "The {category}" highlighting 3-4 permanent attributes.\n'
+            f'3. State: Describe pose and position of the {category} in the image (eg. lying, open, closed, sitting, standing, running, hanging, folded, etc.).\n'
+            f'4. Location: Describe positioning and background (outside, inside, on the floor, on the shelf/table, near objects, background elements etc.).\n\n'
+            'Examples:\n\n'
+            'Example 1 (cat):\n'
+            '<thinking>I need to separate permanent features from temporary state. The cat has white and brown fur with green eyes - these are identity features. It is sitting with paws tucked - this is state. It is on a wooden floor - this is location.</thinking>\n'
+            '<coarse>A photo of a cat</coarse>\n'
+            '<detailed>The cat has a white chest and face with brown fur on its back and ears, bright green eyes, and a distinctive pink nose.</detailed>\n'
+            '<state>Sitting upright with front paws tucked under its body</state>\n'
+            '<location>On a wooden floor near a window</location>\n\n'
+            'Example 2 figurine:\n'
+            '<thinking>Permanent features include shape, color and pattern on the figurine. Where and how it is placed are not permanent, so they go in location and state respectively.</thinking>\n'
+            '<coarse>A photo of a deer shaped ceramic figurine</coarse>\n'
+            '<detailed>The figurine is shaped like a deer with four legs and two antlers, featuring brown coloring on its upper body with yellow specks and white on its underside.</detailed>\n'
+            '<state>lying hrizontally</state>\n'
+            '<location>on the shelf</location>\n\n'
+            f'Now describe the {category} in the image following this format:\n'
+            "<thinking>Your reasoning</thinking>\n"
+            f"<coarse>A photo of a {category}</coarse>\n"
+            f"<detailed>The {category} ...</detailed>\n"
+            "<state>...</state>\n"
+            "<location>...</location>"
+        )
+    return problem
 
 # ============================================================================
 # Personalization Prompts

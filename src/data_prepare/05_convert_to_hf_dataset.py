@@ -11,6 +11,7 @@ from PIL import Image
 import sys
 sys.path.insert(0, 'src/')
 from defined import yollava_reverse_category_dict, myvlm_reverse_category_dict
+from recognition import add_marker_to_image
 # fixed base save directory per your request
 BASE_SAVE_DIR = "share_data"
 
@@ -40,6 +41,7 @@ def json_to_dataset_dict(input_filename, with_negative):
         query_abs = _resolve_path('./', query_path_raw)
         # make retrieved absolute where possible
         retrieved_abs = [_resolve_path('./', rp) for rp in ret_list]
+        retrieved_descriptions = item.get("ret_descs", [])
         # if with_negative:
         # names = [''.join(random.choices(string.ascii_uppercase, k=3)) for _ in range(len(retrieved_abs))]
         names = [string.ascii_uppercase[i] for i in range(len(retrieved_abs))]
@@ -52,7 +54,7 @@ def json_to_dataset_dict(input_filename, with_negative):
 
         # speaker problem prompt (kept similar to your original)
         # if dataset == 'PerVA':
-        concept_name = query_path_raw.split('/')[-3]
+        concept_name = query_path_raw.split('/')[-2]
         # else:
         #     concept_name = query_path_raw.split('/')[-2]
         
@@ -98,6 +100,40 @@ def json_to_dataset_dict(input_filename, with_negative):
             "<location>...</location>"
         )
         uid = idx
+        rand_idx = random.randint(0, len(ret_list))
+        ref_path = retrieved_abs[rand_idx]
+        ref_concept_name = ref_path.split('/')[-2]
+        ref_concept_description = retrieved_descriptions[rand_idx] if rand_idx < len(retrieved_descriptions) else "No description available."
+        answer_format = {
+            "Reasoning": "<Brief comparison based on key attributes>",
+            "Answer": "<yes or no>"
+        }
+        test_questions_examples =[f'Is <{ref_concept_name}> in Image 1? Answer yes or no.', 
+            f'Is <{ref_concept_name}> in the first image? Answer yes or no.',
+            f'Does Image 1 contain <{ref_concept_name}>? Answer yes or no.',
+            f'Does the first image contain <{ref_concept_name}>? Answer yes or no.',
+            f"Can you find <{ref_concept_name}> in Image 1? Answer yes or no.",
+            f"Can you see <{ref_concept_name}> in the first image? Answer yes or no."]
+        
+        test_question = random.choice(test_questions_examples)
+        listener_problem = (
+            f"You are a helpful AI agent specializing in image analysis and object recognition\n\n"
+            f"You are given two images (marked with numbers 1 and 2 in the top-right corner). "
+            f"Additionally, the name and a textual description of the subject "
+            f"in Image 2 is also provided below:\n\n"
+            f"{json.dumps(ref_concept_description, indent=2)}\n"
+            f"Your Task:\n"
+            f"- Compare Image 1 with Image 2 and answer the following question: "
+            f"{test_question}\n"
+            f"- **Ignore superficial details** such as clothing, accessories, pose variations, or "
+            f"surrounding elements (e.g., people in the background).\n"
+            f"- Focus only on non-variant/permanent features such as color, shape, pattern, text for "
+            f"objects/buildings and facial features for people.\n"
+            f"- If you are uncertain then you can refer the textual description of Image 2 "
+            f"to make a more informed decision.\n"
+            f"**Output (JSON only):**\n{json.dumps(answer_format, indent=2)}"
+        )
+        listener_solution = 'yes' if concept_name == ref_concept_name else 'no'
         rows.append({
             "image": Image.open(query_abs).convert('RGB'),
             "ret_paths": retrieved_abs,
@@ -106,6 +142,10 @@ def json_to_dataset_dict(input_filename, with_negative):
             "solution": names[item.get("label")],
             "category": category,
             "example_idx": uid,
+            "query_image": add_marker_to_image(Image.open(query_abs).convert('RGB'), marker_text="1"),
+            "reference_image": add_marker_to_image(Image.open(ref_path).convert('RGB'), marker_text="2"),
+            "listener_problem": listener_problem,
+            "listener_solution": listener_solution,
         })
 
     # create HF Dataset and DatasetDict

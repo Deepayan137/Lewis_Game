@@ -214,6 +214,9 @@ def prepare_test_recognition_items(
             else:  # FIX: added else clause for non-list case
                 ret_path = database["concept_dict"][f'<{concept_name}>']["image"]
             ret_info = database["concept_dict"][f'<{concept_name}>']["info"]  # FIX: changed tag to concept_name, info to ret_info
+            coarse = ret_info.get("general", "")
+            detailed = ret_info.get("distinct features", "")
+            ret_info = f"Name: {concept_name}\n" + "Description: " + coarse[0] + " " + detailed[0]
             sample = {
                 'concept_name': concept_name,
                 "name": query_name,

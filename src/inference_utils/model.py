@@ -38,10 +38,21 @@ def setup_model(model_name_or_path, use_peft=False, device="cuda"):
         
     return model, processor
 
-def speaker_describes_batch(model, processor, problems, images, ret_images=None, temperature=1e-6, max_new_tokens=128, num_return_sequences=1):
+def speaker_describes_batch(model, 
+                            processor, 
+                            problems, 
+                            images, 
+                            ret_images=None, 
+                            temperature=1e-6, 
+                            max_new_tokens=128, 
+                            num_return_sequences=1, 
+                            return_scores=False):
     """
     Process images one at a time with multiple generations per image to avoid OOM.
     If ret_images is provided, process two images (image + ret_image) per iteration.
+
+    Args:
+        return_scores: If True, return tuple of (outputs, generation_outputs) with scores
     """
     if not isinstance(images, list):
         images = [images]
@@ -54,7 +65,8 @@ def speaker_describes_batch(model, processor, problems, images, ret_images=None,
             ret_images = [ret_images]
     
     all_outputs = []
-    
+    all_generation_outputs = [] if return_scores else None
+
     # Process ONE image (or pair of images) at a time
     if ret_images is not None:
         iterator = zip(images, ret_images, problems)
@@ -109,12 +121,24 @@ def speaker_describes_batch(model, processor, problems, images, ret_images=None,
             "num_return_sequences": num_return_sequences,  # Multiple sequences for THIS image
             "pad_token_id": processor.tokenizer.eos_token_id,
         }
-        
+
+        # Add score output flags if requested
+        if return_scores:
+            gen_kwargs["output_scores"] = True
+            gen_kwargs["return_dict_in_generate"] = True
+            gen_kwargs["do_sample"] = True  # Must be True to get scores
+            gen_kwargs["temperature"] = temperature
         with torch.no_grad():
-            generated_ids = model.generate(
+            generation_output = model.generate(
                 **inputs,
                 **gen_kwargs
             )
+
+        # Extract sequences from output
+        if return_scores:
+            generated_ids = generation_output.sequences
+        else:
+            generated_ids = generation_output
         
         # Decode
         input_len = inputs["input_ids"].shape[1]
@@ -127,11 +151,20 @@ def speaker_describes_batch(model, processor, problems, images, ret_images=None,
         )
         
         all_outputs.append(output_texts)  # Add all sequences from this image
-        
+
+        # Store generation outputs if requested
+        if return_scores:
+            all_generation_outputs.append(generation_output)
+
         # Clean up immediately
         del inputs, generated_ids, generated_ids_trimmed
+        if return_scores:
+            # Keep generation_output for later use, but clean up intermediate tensors
+            pass
         torch.cuda.empty_cache()
-    
+
+    if return_scores:
+        return all_outputs, all_generation_outputs
     return all_outputs
 
 if __name__ == "__main__":

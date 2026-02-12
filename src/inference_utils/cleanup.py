@@ -118,6 +118,10 @@ def extract_reasoning_answer_term(text: str, term: str) -> str:
     Extracts the value for a given term from the text.
     It first tries to match a quoted value, then an unquoted word.
     """
+    # Step 1: Strip markdown code blocks if present
+    text = re.sub(r'^```(?:json)?\s*\n?', '', text)
+    text = re.sub(r'\n?```\s*$', '', text)
+    
     patterns = {
         'Answer': r'"Answer":\s*(?:"([^"]+)"|([\w-]+))',
         'Confidence': r'"Confidence":\s*(?:"([^"]+)"|([\w.]+))',
@@ -128,17 +132,20 @@ def extract_reasoning_answer_term(text: str, term: str) -> str:
         'D': r'"D":\s*(?:"([^"]+)"|([\w-]+))',
         'E': r'"E":\s*(?:"([^"]+)"|([\w-]+))',
         'F': r'"F":\s*(?:"([^"]+)"|([\w-]+))',
-        # 'Caption': r'"Caption":\s*(?:"([^"]+)"|([\w-]+))'
     }
     pattern = patterns.get(term)
     if not pattern:
         return None
     match = re.search(pattern, text)
     if match:
-        return (match.group(1) or match.group(2)).strip()
+        result = (match.group(1) or match.group(2)).strip()
+        # Step 2: Strip extra single/double quotes
+        result = result.strip("'\"")
+        return result
     else:
         # Fallback if regex doesn't match.
         parts = text.split(term)
         if parts:
-            return re.sub(r'[^a-zA-Z0-9\s]', '', parts[-1]).strip()
+            result = re.sub(r'[^a-zA-Z0-9\s]', '', parts[-1]).strip()
+            return result
         return None

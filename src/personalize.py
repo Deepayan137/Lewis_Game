@@ -41,6 +41,146 @@ LOG = logging.getLogger(__name__)
 
 
 # ============================================================================
+# Confidence Calculator
+# ============================================================================
+
+class ConfidenceCalculator:
+    """
+    Calculate confidence metrics from model generation outputs.
+    """
+    def __init__(self, processor):
+        self.processor = processor
+        self.tokenizer = processor.tokenizer
+
+    def extract_answer_probabilities(self, generation_output, letter2name):
+        """
+        Extract probabilities for each answer option (A, B, C, ...) from generation output.
+
+        Args:
+            generation_output: Output from model.generate() with output_scores=True
+            letter2name: Dict mapping letters to concept names
+
+        Returns:
+            Dict with probabilities, entropy, margin, and predicted letter
+        """
+        import torch.nn.functional as F
+
+        # Get scores (logits) for each token position
+        scores = generation_output.scores  # List of tensors, one per generated token
+        if not scores or len(scores) == 0:
+            # No scores available, return uniform distribution
+            num_options = len(letter2name)
+            uniform_prob = 1.0 / num_options
+            return {
+                "probabilities": {letter: uniform_prob for letter in letter2name.keys()},
+                "entropy": float(num_options) * uniform_prob * (-torch.log(torch.tensor(uniform_prob))).item(),
+                "margin": 0.0,
+                "predicted_letter": None
+            }
+
+        # Get the generated sequence
+        generated_ids = generation_output.sequences[0]  # Take first sequence
+        generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+        letter_tokens = {}
+        for letter in letter2name.keys():
+            # Try encoding the letter alone
+            token_ids = self.tokenizer.encode(letter, add_special_tokens=False)
+            if token_ids:
+                letter_tokens[letter] = token_ids[0]
+
+            # Also try encoding with common surrounding context (e.g., '"A"')
+            for context in [f'"{letter}"', f' {letter}', f'{letter}']:
+                token_ids = self.tokenizer.encode(context, add_special_tokens=False)
+                if token_ids and letter not in letter_tokens:
+                    # Check if this helps find the letter
+                    for tid in token_ids:
+                        tok_str = self.tokenizer.decode([tid], skip_special_tokens=True).strip(' "')
+                        if tok_str == letter:
+                            letter_tokens[letter] = tid
+                            break
+
+        # Search backwards through the generated sequence to find the answer letter
+        # This is more reliable since the answer appears near the end in JSON format
+        answer_position = None
+        predicted_letter = None
+        # Start from the end and work backwards
+        for i in range(len(generated_ids) - 1, -1, -1):
+            token_id = generated_ids[i].item()
+            token_str = self.tokenizer.decode([token_id], skip_special_tokens=True).strip().strip('"')
+
+            # Check if this token matches any answer letter
+            if token_str in letter2name:
+                # Verify this is in the "Answer" field by checking preceding context
+                context_start = max(0, i - 10)
+                context_text = self.tokenizer.decode(generated_ids[context_start:i], skip_special_tokens=True)
+                if '"Answer"' in context_text or 'Answer' in context_text:
+                    answer_position = i
+                    predicted_letter = token_str
+                    break
+        print(f"Found answer_position: {answer_position}, predicted_letter: {predicted_letter}")
+        if answer_position is None:
+            # Could not find answer position, return uniform distribution
+            num_options = len(letter2name)
+            uniform_prob = 1.0 / num_options
+            return {
+                "probabilities": {letter: uniform_prob for letter in letter2name.keys()},
+                "entropy": float(num_options) * uniform_prob * (-torch.log(torch.tensor(uniform_prob))).item(),
+                "margin": 0.0,
+                "predicted_letter": None
+            }
+
+        # Calculate the index into the scores list
+        # scores[i] corresponds to the i-th generated token (after the input prompt)
+        input_length = len(generated_ids) - len(scores)
+        score_idx = answer_position - input_length
+
+        if score_idx < 0 or score_idx >= len(scores):
+            # Score index out of bounds, return uniform distribution
+            num_options = len(letter2name)
+            uniform_prob = 1.0 / num_options
+            return {
+                "probabilities": {letter: uniform_prob for letter in letter2name.keys()},
+                "entropy": float(num_options) * uniform_prob * (-torch.log(torch.tensor(uniform_prob))).item(),
+                "margin": 0.0,
+                "predicted_letter": predicted_letter
+            }
+
+        # Get logits at the answer position
+        logits_at_answer = scores[score_idx][0]  # Shape: [vocab_size]
+
+        # Extract probabilities for each answer option
+        probs = F.softmax(logits_at_answer, dim=-1)
+
+        letter_probs = {}
+        for letter, token_id in letter_tokens.items():
+            letter_probs[letter] = probs[token_id].item()
+
+        # Normalize probabilities to sum to 1 across answer options
+        total_prob = sum(letter_probs.values())
+        if total_prob > 1e-10:
+            letter_probs = {k: v / total_prob for k, v in letter_probs.items()}
+        else:
+            # All probabilities are near zero, use uniform
+            num_options = len(letter2name)
+            uniform_prob = 1.0 / num_options
+            letter_probs = {letter: uniform_prob for letter in letter2name.keys()}
+
+        # Calculate entropy: -sum(p * log(p))
+        entropy = -sum([p * torch.log(torch.tensor(p + 1e-10)) for p in letter_probs.values()]).item()
+
+        # Calculate margin: difference between top two probabilities
+        sorted_probs = sorted(letter_probs.values(), reverse=True)
+        margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) >= 2 else sorted_probs[0]
+
+        return {
+            "probabilities": letter_probs,
+            "entropy": entropy,
+            "margin": margin,
+            "predicted_letter": predicted_letter
+        }
+
+
+# ============================================================================
 # Prompt Generation
 # ============================================================================
 
@@ -216,6 +356,7 @@ def run_inference_loop(
     batch_size: int = 8,
     max_new_tokens: int = 128,
     device: torch.device = None,
+    mode: str = "inference",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Run model on the prepared items and return results and metrics.
@@ -228,6 +369,7 @@ def run_inference_loop(
         batch_size: Batch size for inference
         max_new_tokens: Maximum tokens to generate
         device: Torch device
+        mode: 'inference' or 'analysis' mode
 
     Returns:
         Tuple of (results_list, metrics_dict)
@@ -244,6 +386,9 @@ def run_inference_loop(
 
     if device is None:
         device = get_device()
+
+    # Initialize confidence calculator for analysis mode
+    confidence_calc = ConfidenceCalculator(processor) if mode == "analysis" else None
 
     for batch in tqdm(loader, desc="Running inference"):
         # Load images
@@ -262,14 +407,22 @@ def run_inference_loop(
         letter2names = [it.get("letter2name", {}) for it in batch]
 
         try:
-            responses = speaker_describes_batch(
-                model, processor, problems, images,
-                temperature=temperature, max_new_tokens=max_new_tokens
-            )
+            if mode == "analysis":
+                responses, generation_outputs = speaker_describes_batch(
+                    model, processor, problems, images,
+                    temperature=temperature, max_new_tokens=max_new_tokens,
+                    return_scores=True
+                )
+            else:
+                responses = speaker_describes_batch(
+                    model, processor, problems, images,
+                    temperature=temperature, max_new_tokens=max_new_tokens
+                )
+                generation_outputs = None
         except Exception:
             LOG.exception("Failed generating responses for batch; skipping.")
             for path, gt, sol_desc, rp in zip(paths, gt_names, sol_descs, ret_paths):
-                results.append({
+                result_entry = {
                     "image_path": path,
                     "problem": None,
                     "solution": gt,
@@ -278,7 +431,10 @@ def run_inference_loop(
                     "response": "",
                     "pred_name": "",
                     "correct": False,
-                })
+                }
+                if mode == "analysis":
+                    result_entry["confidence"] = None
+                results.append(result_entry)
                 total_count += 1
             continue
 
@@ -299,9 +455,9 @@ def run_inference_loop(
                 pred_names.append("")
 
         # Accumulate results
-        for path, gt, sol_desc, rp, resp, pred, lt2nm in zip(
-            paths, gt_names, sol_descs, ret_paths, responses, pred_names, letter2names
-        ):
+        for idx, (path, problem, gt, sol_desc, rp, resp, pred, lt2nm) in enumerate(zip(
+            paths, problems, gt_names, sol_descs, ret_paths, responses, pred_names, letter2names
+        )):
             # Map letter prediction to concept name
             pred_name = lt2nm.get(pred, pred)
             is_correct = pred_name.lower() == gt.lower()
@@ -310,16 +466,28 @@ def run_inference_loop(
                 correct_count += 1
             total_count += 1
 
-            results.append({
+            result_entry = {
                 "image_path": path,
-                "problem": resp if isinstance(resp, str) else resp[0] if resp else None,
+                "problem": problem,
                 "solution": gt,
                 "solution_desc": sol_desc,
                 "ret_paths": rp,
                 "response": resp[0] if isinstance(resp, list) else resp,
                 "pred_name": pred_name,
                 "correct": is_correct,
-            })
+            }
+
+            # Add confidence metrics in analysis mode
+            if mode == "analysis" and generation_outputs is not None:
+                try:
+                    gen_output = generation_outputs[idx]
+                    confidence = confidence_calc.extract_answer_probabilities(gen_output, lt2nm)
+                    result_entry["confidence"] = confidence
+                except Exception:
+                    LOG.exception(f"Failed to calculate confidence for item {idx}")
+                    result_entry["confidence"] = None
+
+            results.append(result_entry)
 
         clear_cuda_cache()
 
@@ -346,6 +514,8 @@ def parse_args():
     # Task-specific args
     parser.add_argument("--k_retrieval", type=int, default=3,
                         help="Number of references to retrieve")
+    parser.add_argument("--mode", type=str, default="inference", choices=["inference", "analysis"],
+                        help="Mode: 'inference' for standard evaluation, 'analysis' for confidence/entropy analysis")
 
     return parser.parse_args()
 
@@ -425,6 +595,7 @@ def main():
         temperature=args.temperature,
         batch_size=args.batch_size,
         max_new_tokens=args.max_new_tokens,
+        mode=args.mode,
     )
 
     # Save results
@@ -434,7 +605,9 @@ def main():
     outdir = outdir / f'seed_{args.seed}'
     outdir.mkdir(parents=True, exist_ok=True)
 
-    outpath = outdir / f"results_model_{args.model_type}_db_{args.db_type}_k_{args.k_retrieval}.json"
+    # Include mode in filename for analysis runs
+    mode_suffix = f"_{args.mode}" if args.mode == "analysis" else ""
+    outpath = outdir / f"results_model_{args.model_type}_db_{args.db_type}_k_{args.k_retrieval}{mode_suffix}.json"
     save_results(results, metrics, vars(args), outpath)
 
     LOG.info("Accuracy: %.4f (%d/%d)", metrics['accuracy'], metrics['correct'], metrics['total'])
