@@ -238,35 +238,7 @@ def _call_listener_batch(batch_requests, timeout=LISTENER_TIMEOUT,
         else:
             print(f"[WARN] unexpected JSON format for chunk {start}:{end}: {type(resp)}; resp keys: {list(resp.keys()) if isinstance(resp, dict) else 'N/A'}")
             res = neutral_resp_slice(chunk)
-
-                # # if the listener returned wrong length for this chunk, fallback for safety
-                # if not isinstance(res, list) or len(res) != len(chunk):
-                #     print(f"[WARN] listener returned {len(res)} results but expected {len(chunk)} for chunk {start}:{end}. Using fallback for this chunk.")
-                #     res = neutral_resp_slice(chunk)
-
         results_all.extend(res)
-                # chunk_success = True
-                # break  # exit retry loop for this chunk
-
-            # except requests.exceptions.RequestException as e:
-            #     print(f"[WARN] listener chunk {start}:{end} request failed attempt={attempt}: {e}")
-            #     if attempt > max_retries:
-            #         print(f"[ERROR] chunk {start}:{end} failed after {max_retries} retries; using neutral fallback")
-            #         results_all.extend(neutral_resp_slice(chunk))
-            #         break
-            #     # exponential backoff
-            #     backoff = backoff_factor * (2 ** (attempt - 1))
-            #     time.sleep(backoff)
-            # except Exception as e:
-            #     print(f"[WARN] unexpected error calling listener for chunk {start}:{end}: {e}")
-            #     # fallback and break
-            #     results_all.extend(neutral_resp_slice(chunk))
-            #     break
-
-        # optional tiny pause to avoid bursts
-        # if chunk_delay and (end < total):
-        #     time.sleep(chunk_delay)
-
     # final safety: ensure we return exactly one response per request
     if len(results_all) != total:
         print(f"[WARN] results length mismatch: got {len(results_all)} expected {total}; filling remainder with neutral responses")

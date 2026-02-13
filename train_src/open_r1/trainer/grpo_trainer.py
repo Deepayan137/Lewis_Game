@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import os
 import textwrap
 from collections import defaultdict
@@ -50,7 +49,7 @@ from trl.trainer.utils import generate_model_card, get_comet_experiment_url
 import sys
 sys.path.insert(0, 'train_src/')
 # from open_r1.dist_helpers import *
-from open_r1.trainer.speaker_helpers import aggregate_speaker_requests, modify_prompt
+from open_r1.trainer.speaker_helpers import aggregate_speaker_requests, get_selection_prompt, get_consistency_prompt
 import copy
 
 
@@ -354,26 +353,38 @@ class Qwen2VLGRPOTrainer(Trainer):
             raise ValueError("The GRPOTrainer does not support returning outputs")
         
         if self.train_listener:
-            desc = aggregate_speaker_requests(inputs)
-            # rank = dist.get_rank() if dist.is_initialized() else 0
-            # print(f"[Rank {rank}] Aggregate speaker outputs ({len(desc)} items):")
-            # for i, d in enumerate(desc):
-            #     print(f"  - Example {i}: {d}")
-            inputs = modify_prompt(inputs, desc)
+            # desc = aggregate_speaker_requests(inputs)
+            # selection_inputs = get_selection_prompt(inputs, desc)
+            # for inp in selection_inputs:
+                # inp["task_type"] = "selection"
+            consistency_inputs = get_consistency_prompt(inputs)
+            inputs = consistency_inputs
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs]
         all_images = []
-        ret_images = []
         for sample in inputs:
-            if "grid_image" in sample:
-                # Each sample has two images: original and grid
-                all_images.extend([sample['image'], sample['grid_image']])
+            if sample.get('task_type') == 'consistency':
+                all_images.extend([sample['query_image'], sample['reference_image']])
             else:
                 # Each sample has one image
                 all_images.append(sample["image"])
-            if "ret_images" in sample:
-                ret_images.append(sample["ret_images"])
-        prompt_inputs = self.processing_class(text=prompts_text, images=all_images, return_tensors="pt", padding="max_length", max_length=1024, padding_side="left", add_special_tokens=False)
+
+        # DEBUG: Log prompt structure
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        if rank == 0:
+            # print(f"\n[DEBUG] Batch size: {len(inputs)}")
+            # print(f"[DEBUG] Total images collected: {len(all_images)}")
+            for i, (inp, prompt_text) in enumerate(zip(inputs, prompts_text)):
+                task_type = inp.get('task_type', 'unknown')
+                img_markers = prompt_text.count('<|image_pad|>') + prompt_text.count('<image>')
+                # print(f"[DEBUG] Prompt {i}: task_type={task_type}, image_markers_in_text={img_markers}")
+                # print(f"[DEBUG] Prompt {i} content preview: {prompt_text[:200]}...")
+
+        prompt_inputs = self.processing_class(text=prompts_text, 
+                                            images=all_images, 
+                                            return_tensors="pt",
+                                            padding='max_length', 
+                                            truncation=True, max_length=3072, add_special_tokens=False, padding_side='right')
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
         
         # Convert floating point tensors to model's dtype (bfloat16)
@@ -469,7 +480,6 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Sum the rewards from all reward functions
         rewards = rewards_per_func.sum(dim=1)
-
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
         std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)

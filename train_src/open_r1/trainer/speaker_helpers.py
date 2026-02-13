@@ -235,7 +235,35 @@ def format_extra_info(extra_info: dict[str, str]) -> str:
         lines.append(f"Name: {name}, Info: {info}")
     return "\n".join(lines)
 
-def modify_prompt(inputs, descriptions):
+def get_consistency_prompt(inputs):
+    consistency_inputs = []
+    for inp in inputs:
+        # Create a copy of inp to preserve other fields that might be needed
+        consistency_inp = dict(inp)  # Start with a copy
+
+        # Override/add specific fields for consistency task
+        consistency_inp['prompt'] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},  # query_image
+                    {"type": "image"},  # reference_image
+                    {"type": "text", "text": inp["listener_problem"]},
+                ],
+            }
+        ]
+        consistency_inp['task_type'] = 'consistency'
+        consistency_inp['listener_solution'] = inp['listener_solution']
+        consistency_inp['query_image'] = inp['query_image']
+        consistency_inp['reference_image'] = inp['reference_image']
+
+        # Set these to None to avoid KeyError in reward functions
+        consistency_inp['solution'] = None
+
+        consistency_inputs.append(consistency_inp)
+    return consistency_inputs
+
+def get_selection_prompt(inputs, descriptions):
     """
     inputs[i]:  {'names': [...], 'category': str, 'image': <PIL or path>, ...}
     descriptions[i]: {'descriptions': [...]}
@@ -284,6 +312,8 @@ def modify_prompt(inputs, descriptions):
                 ],
             }
         ]
+        inp['task_type'] = 'selection'
+        inp['listener_solution'] = None  # So consistency_reward doesn't crash
         mod_inputs.append(inp)
 
     return mod_inputs

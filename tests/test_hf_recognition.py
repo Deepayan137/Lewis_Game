@@ -141,7 +141,6 @@ def run_inference_loop(
         # Extract images (already PIL images from HF dataset)
         query_images = [item['query_image'] for item in batch]
         reference_images = [item['reference_image'] for item in batch]
-
         # Extract prompts and solutions
         problems = [item['listener_problem'] for item in batch]
         solutions = [item['listener_solution'] for item in batch]
@@ -218,7 +217,6 @@ def run_inference_loop(
             solution_stats[sol_key]['total'] += 1
             if is_correct:
                 solution_stats[sol_key]['correct'] += 1
-
             results.append({
                 "idx": batch[idx]['idx'],
                 "category": batch[idx]['category'],
@@ -228,8 +226,8 @@ def run_inference_loop(
                 "response": resp[0] if isinstance(resp, list) else resp,
                 "pred": pred,
                 "correct": is_correct,
-                "ret_paths": batch[idx]['ret_paths'],
-                "names": batch[idx]['names'],
+                "query_image_path": batch[idx]['query_path'],
+                "reference_image": batch[idx]['reference_path'],
             })
 
         clear_cuda_cache()

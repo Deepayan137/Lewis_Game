@@ -24,8 +24,17 @@ def _resolve_path(root: str, p: str) -> str:
         return p
     return os.path.join(root, p)
 
+def sample_random_image_from_different_category(ret_data, query_category):
+    data_subset = []
+    for item in ret_data:
+        if item['category'] != query_category:
+            data_subset.append(item)
+    entry = random.choice(data_subset)
+    reference_path = entry['for_recognition']['ref_path']
+    reference_description = entry['for_recognition']['descriptions']['coarse'][0] + '. ' + entry['for_recognition']['descriptions']['detailed'][0]
+    return reference_path, reference_description
 
-def json_to_dataset_dict(input_filename, with_negative):
+def json_to_dataset_dict(input_filename, with_negative, cross_category):
     retrieval_json_path = input_filename 
     with open(retrieval_json_path, "r") as f:
         data = json.load(f)
@@ -41,37 +50,19 @@ def json_to_dataset_dict(input_filename, with_negative):
         query_abs = _resolve_path('./', query_path_raw)
         # make retrieved absolute where possible
         retrieved_abs = [_resolve_path('./', rp) for rp in ret_list]
-        retrieved_descriptions = item.get("ret_descs", [])
-        # if with_negative:
-        # names = [''.join(random.choices(string.ascii_uppercase, k=3)) for _ in range(len(retrieved_abs))]
         names = [string.ascii_uppercase[i] for i in range(len(retrieved_abs))]
-        # else:
-        #     names = [Path(p).parent.name for p in retrieved_abs]
-        # simple validation: warn if query path missing
         if not os.path.exists(query_abs):
             # keep entry, but warn
             print(f"Warning: query image not found: {query_abs}")
-
-        # speaker problem prompt (kept similar to your original)
-        # if dataset == 'PerVA':
-        concept_name = query_path_raw.split('/')[-2]
-        # else:
-        #     concept_name = query_path_raw.split('/')[-2]
-        
-        # if dataset == 'YoLLaVA':
-        #     category = yollava_reverse_category_dict[concept_name]
-        # elif dataset == "MyVLM":
-        #     category = myvlm_reverse_category_dict[concept_name]
-        # elif dataset == 'PerVA':
+        query_concept_name = query_path_raw.split('/')[-2]
+        category_name = query_path_raw.split('/')[-3]
         perva_category_map = {
             'veg': 'vegetable',
             'decoration': 'decoration object',
             'retail': 'retail object',
             'tro_bag': 'trolley bag',
         }
-        category = perva_category_map.get(concept_name, concept_name)
-        # else:
-        #     category = item.get("category", "object")
+        category = perva_category_map.get(category_name, category_name)
         speaker_problem = (
             f'Provide descriptions of the {category} in the image in four parts:\n'
             f'1. Coarse: A 5-6 word description starting with "A photo of a {category}"\n'
@@ -100,10 +91,47 @@ def json_to_dataset_dict(input_filename, with_negative):
             "<location>...</location>"
         )
         uid = idx
-        rand_idx = random.randint(0, len(ret_list))
-        ref_path = retrieved_abs[rand_idx]
+
+        # Target distribution: 50% positive, 50% negative
+        is_positive = random.random() < 0.5
+
+        if is_positive:
+            # Sample positive: same concept as query
+            positive_candidates = [p for p in retrieved_abs if p.split('/')[-2] == query_concept_name]
+
+            if positive_candidates:
+                ref_path = random.choice(positive_candidates)
+                # Try to get description from for_recognition if it matches
+                if ref_path == item['for_recognition']['ref_path']:
+                    ref_concept_description = item['for_recognition']['descriptions']['coarse'][0] + '. ' + item['for_recognition']['descriptions']['detailed'][0]
+                else:
+                    ref_concept_description = "No description available."
+            else:
+                # Fallback if no positive candidates (shouldn't happen)
+                ref_path = item['for_recognition']['ref_path']
+                ref_concept_description = item['for_recognition']['descriptions']['coarse'][0] + '. ' + item['for_recognition']['descriptions']['detailed'][0]
+        else:
+            # Sample negative: different concept from query
+            if cross_category and random.random() < 0.4:  # 40% of negatives are cross-category (20% overall)
+                # Sample from different category
+                ref_path, ref_concept_description = sample_random_image_from_different_category(data, category_name)
+            else:
+                # Sample within-category negative (60% of negatives = 30% overall if cross_category, 100% if not)
+                negative_candidates = [p for p in retrieved_abs if p.split('/')[-2] != query_concept_name]
+
+                if negative_candidates:
+                    ref_path = random.choice(negative_candidates)
+                    # Try to get description from for_recognition if it matches
+                    if ref_path == item['for_recognition']['ref_path']:
+                        ref_concept_description = item['for_recognition']['descriptions']['coarse'][0] + '. ' + item['for_recognition']['descriptions']['detailed'][0]
+                    else:
+                        ref_concept_description = "No description available."
+                else:
+                    # Fallback: use for_recognition even if it might be positive
+                    ref_path = item['for_recognition']['ref_path']
+                    ref_concept_description = item['for_recognition']['descriptions']['coarse'][0] + '. ' + item['for_recognition']['descriptions']['detailed'][0]
         ref_concept_name = ref_path.split('/')[-2]
-        ref_concept_description = retrieved_descriptions[rand_idx] if rand_idx < len(retrieved_descriptions) else "No description available."
+        ref_category = perva_category_map.get(ref_path.split('/')[-3], ref_path.split('/')[-3])
         answer_format = {
             "Reasoning": "<Brief comparison based on key attributes>",
             "Answer": "<yes or no>"
@@ -119,9 +147,10 @@ def json_to_dataset_dict(input_filename, with_negative):
         listener_problem = (
             f"You are a helpful AI agent specializing in image analysis and object recognition\n\n"
             f"You are given two images (marked with numbers 1 and 2 in the top-right corner). "
-            f"Additionally, the name and a textual description of the subject "
+            f"Additionally, the name and the description of the subject "
             f"in Image 2 is also provided below:\n\n"
             f"{json.dumps(ref_concept_description, indent=2)}\n"
+            # f"Name: {ref_concept_name}, Category: {ref_category}\n\n"
             f"Your Task:\n"
             f"- Compare Image 1 with Image 2 and answer the following question: "
             f"{test_question}\n"
@@ -131,9 +160,10 @@ def json_to_dataset_dict(input_filename, with_negative):
             f"objects/buildings and facial features for people.\n"
             f"- If you are uncertain then you can refer the textual description of Image 2 "
             f"to make a more informed decision.\n"
+            # f"Think step by step and provide your reasoning before giving the final answer.\n\n"
             f"**Output (JSON only):**\n{json.dumps(answer_format, indent=2)}"
         )
-        listener_solution = 'yes' if concept_name == ref_concept_name else 'no'
+        listener_solution = 'yes' if query_concept_name == ref_concept_name else 'no'
         rows.append({
             "image": Image.open(query_abs).convert('RGB'),
             "ret_paths": retrieved_abs,
@@ -142,6 +172,8 @@ def json_to_dataset_dict(input_filename, with_negative):
             "solution": names[item.get("label")],
             "category": category,
             "example_idx": uid,
+            "query_path": query_abs,
+            "reference_path": ref_path,
             "query_image": add_marker_to_image(Image.open(query_abs).convert('RGB'), marker_text="1"),
             "reference_image": add_marker_to_image(Image.open(ref_path).convert('RGB'), marker_text="2"),
             "listener_problem": listener_problem,
@@ -191,12 +223,14 @@ def parse_args():
     ap.add_argument("--input_filename", default="outputs/PerVA/all/seed_23/retrieval_top3_subset_30.json")
     ap.add_argument("--seed", type=int, default=23, help="Random seed for reproducibility.")
     ap.add_argument("--K", type=int, default=3, help="distracors + 1")
+    ap.add_argument("--cross_category",action='store_true', help="Whether to sample negatives from different categories (cross-category) or same category (within-category).")
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
-    ds = json_to_dataset_dict(args.input_filename, with_negative=False)
+    print('Cross-category sampling:', args.cross_category)
+    ds = json_to_dataset_dict(args.input_filename, with_negative=False, cross_category=args.cross_category)
     print_dataset_statistics(ds)
     subset_match = re.search(r'subset_(\d+)', args.input_filename)
     subset = f"subset_{subset_match.group(1)}" if subset_match else None
@@ -207,6 +241,10 @@ def main():
         save_dirname += f"_{subset}"
     if sampled:
         save_dirname += f"_{sampled}"
+    
+    # save_dirname += "reco_no_desc"
+    if args.cross_category:
+        save_dirname += "_cross_category"
     out = save_dataset_dict(ds, save_dirname)
     print(f"Dataset saved in: {save_dirname}")
     # quick sanity check load
