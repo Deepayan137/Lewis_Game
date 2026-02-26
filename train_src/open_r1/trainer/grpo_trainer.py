@@ -383,8 +383,8 @@ class Qwen2VLGRPOTrainer(Trainer):
         prompt_inputs = self.processing_class(text=prompts_text, 
                                             images=all_images, 
                                             return_tensors="pt",
-                                            padding='max_length', 
-                                            truncation=True, max_length=3072, add_special_tokens=False, padding_side='right')
+                                            padding='max_length',
+                                            truncation=True, max_length=3072, add_special_tokens=False, padding_side='left') #3072
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
         
         # Convert floating point tensors to model's dtype (bfloat16)

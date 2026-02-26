@@ -130,7 +130,6 @@ def run_description_generation(
         except Exception:
             LOG.exception("Failed processing batch %d; skipping.", batch_idx)
             continue
-
         batch_time = time.time() - batch_start_time
         n_in_batch = len(batch_items) if hasattr(batch_items, '__len__') else 0
         samples_per_second = n_in_batch / batch_time if batch_time > 0 else float('inf')
@@ -161,6 +160,7 @@ def process_raw_results(
     data_name: str,
     default_category: str,
     num_return_sequences: int = 1,
+    analyze=False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Process raw generation results into structured output dicts.
@@ -176,7 +176,6 @@ def process_raw_results(
     """
     descriptions_dict: Dict[str, Any] = {}
     database_dict = {"concept_dict": {}, "path_to_concept": {}}
-
     for name, image_path, desc in raw_results:
         # Get category for this concept
         category = get_category_for_concept(name, data_name)
@@ -193,9 +192,12 @@ def process_raw_results(
             parsed = parse_descriptions(desc[0])
             desc_clean = {
                 "coarse": [parsed["coarse"] or f"A photo of a {category}"],
-                "detailed": [parsed["detailed"]],
+                "detailed": [parsed["detailed"] or ""],
+                # "detailed": ['.'.join(parsed["detailed"].split('.')[:-2])+ '.' if parsed["detailed"] else ""],
+                "state": [parsed.get("state", "")],
+                "location": [parsed.get("location", "")],
             }
-
+        print(desc_clean)
         # Build descriptions dict
         descriptions_dict[name] = {
             "name": name,
@@ -217,7 +219,11 @@ def process_raw_results(
             }
         }
         database_dict["path_to_concept"][resolved_path] = f'<{name}>'
-
+        if analyze:
+            descriptions_dict[name]["state"] = desc_clean.get("state", [""])
+            descriptions_dict[name]["location"] = desc_clean.get("location", [""])
+            database_dict["concept_dict"][f'<{name}>']["info"]["state"] = desc_clean.get("state", [""])
+            database_dict["concept_dict"][f'<{name}>']["info"]["location"] = desc_clean.get("location", [""])
     return descriptions_dict, database_dict
 
 
@@ -237,6 +243,8 @@ def parse_args():
                         help="Number of descriptions to generate per image")
     parser.add_argument("--copy_to_rap", action="store_true",
                         help="Copy database file to RAP example_database directory")
+    parser.add_argument("--analyze", action="store_true",
+                        help="")
 
     return parser.parse_args()
 
@@ -295,24 +303,28 @@ def main():
         num_return_sequences=args.num_return_sequences,
         log_every=5,
     )
-
     # Process results
     descriptions_dict, database_dict = process_raw_results(
         raw_results,
         data_name=args.data_name,
         default_category=args.category,
         num_return_sequences=args.num_return_sequences,
+        analyze=args.analyze,
     )
 
     # Save outputs
     savedir = Path(args.output_dir) / args.data_name / args.category / f'seed_{args.seed}'
     savedir.mkdir(parents=True, exist_ok=True)
-
-    desc_file = savedir / f"descriptions_{args.model_type}.json"
+    if args.analyze:
+        desc_file = savedir / f"descriptions_{args.model_type}_analyze.json"
+    else:
+        desc_file = savedir / f"descriptions_{args.model_type}.json"
     with desc_file.open('w', encoding='utf-8') as f:
         json.dump(descriptions_dict, f, indent=2, ensure_ascii=False)
-
-    db_file = savedir / f"database_{args.model_type}.json"
+    if args.analyze:
+        db_file = savedir / f"database_{args.model_type}_analyze.json"
+    else:
+        db_file = savedir / f"database_{args.model_type}.json"
     with db_file.open('w', encoding='utf-8') as f:
         json.dump(database_dict, f, indent=2, ensure_ascii=False)
 

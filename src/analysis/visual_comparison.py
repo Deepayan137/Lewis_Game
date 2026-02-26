@@ -370,6 +370,7 @@ def process_failure_cases(
     }
 
     correct_visual = 0
+
     for idx, case in enumerate(cases, 1):
         LOG.info(f"Processing case {idx}/{len(cases)}: {case['solution']}")
 
@@ -514,7 +515,7 @@ def main():
                         help='Dataset name (for loading descriptions)')
     parser.add_argument('--seed', type=int, default=23,
                         help='Random seed')
-    parser.add_argument('--temperature', type=float, default=1,
+    parser.add_argument('--temperature', type=float, default=1e-6,
                         help='Generation temperature')
     parser.add_argument('--max_new_tokens', type=int, default=128,
                         help='Maximum tokens to generate')

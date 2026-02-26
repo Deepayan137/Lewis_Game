@@ -109,50 +109,51 @@ def add_marker_to_image(image: Image.Image, marker_text: str, position: str = "t
 # Prompt Generation
 # ============================================================================
 
-def get_prompt(description: Dict[str, Any], test_question: str, vqa: bool = False) -> str:
-    """
-    Build the prompt for binary recognition or VQA task.
-
-    Args:
-        description: Dict with reference info (category, general, distinct features)
-        test_question: The question to answer
-        vqa: Whether this is a VQA task (changes answer format)
-
-    Returns:
-        Formatted prompt string
-    """
-    if vqa:
-        answer_format = {
-            "Reasoning": "<Brief comparison based on key attributes>",
-            "Answer": "<A or B>"
-        }
-    else:
-        answer_format = {
-            "Reasoning": "<Brief comparison based on key attributes>",
-            "Answer": "<yes or no>"
-        }
-
-    test_question = test_question.replace('the image', 'the first image')
-
-    prompt = (
+def get_listener_prompt_no_description(ref_concept_name: str, ref_category, test_question: str) -> str:
+    """Generate listener task prompt for comparing images."""
+    answer_format = {
+        "Reasoning": "<Brief comparison based on key attributes>",
+        "Answer": "<yes or no>"
+    }
+    
+    return (
+        f"You are a helpful AI agent specializing in image analysis and object recognition\n\n"
+            f"You are given two images (marked with numbers 1 and 2 in the top-right corner). "
+            f"The subject in Image 2 is: {ref_concept_name}\n\n"
+            f"Your Task:\n"
+            f"- Compare Image 1 with Image 2 and answer the following question: "
+            f"{test_question}\n"
+            f"- **Ignore superficial details** such as clothing, accessories, pose variations, or surrounding elements (e.g., people in the background).\n"
+            f"- **Focus only on non-variant/permanent features** such as color, shape, pattern, distinctive markings for objects/buildings and facial features for people\n"
+            f"- Determine if the EXACT SAME subject appears in both images.\n\n"
+            "Think step by step and provide your reasoning before giving the final answer.\n\n"
+            f"**Output (JSON only):**\n{json.dumps(answer_format, indent=2)}"
+    )
+def get_listener_prompt_with_description(ref_description, test_question: str) -> str:
+    """Generate listener task prompt for comparing images."""
+    answer_format = {
+        "Reasoning": "<Brief comparison based on key attributes>",
+        "Answer": "<yes or no>"
+    }
+    
+    return (
         f"You are a helpful AI agent specializing in image analysis and object recognition\n\n"
         f"You are given two images (marked with numbers 1 and 2 in the top-right corner). "
-        f"Additionally, the name and a textual description of the subject "
-        f"in Image 2 is also provided below:\n\n"
-        f"{json.dumps(description, indent=2)}\n"
+        f"Additionally, the name and a textual description of the subject in Image 2 is provided below:\n\n"
+        f"{ref_description}\"\n\n"
         f"Your Task:\n"
-        f"- Compare Image 1 with Image 2 and answer the following question: "
-        f"{test_question}\n"
-        f"- **Ignore superficial details** such as clothing, accessories, pose variations, or "
-        f"surrounding elements (e.g., people in the background).\n"
-        f"- Focus only on non-variant/permanent features such as color, shape, pattern, text for "
-        f"objects/buildings and facial features for people.\n"
+        f"- Compare Image 1 with Image 2 and answer the following question: {test_question}\n"
+        f"- **Ignore superficial details** such as clothing, accessories, pose variations, "
+        f"or surrounding elements (e.g., people in the background).\n"
+        f"- **Focus only on non-variant/permanent features** such as color, shape, pattern, "
+        f"distinctive markings for objects/buildings and facial features for people\n"
+        f"- Determine if the EXACT SAME subject appears in both images.\n"
         f"- If you are uncertain then you can refer the textual description of Image 2 "
-        f"to make a more informed decision.\n"
+        f"to make a more informed decision.\n\n"
+        f"Think step by step and provide your reasoning before giving the final answer.\n\n"
         f"**Output (JSON only):**\n{json.dumps(answer_format, indent=2)}"
     )
 
-    return prompt
 
 
 # ============================================================================
@@ -208,7 +209,7 @@ def prepare_test_recognition_items(
         query_name = sub_item["name"]
         for concept_name in concept_names:
             # if concept_name == query_name:
-            ret_image_path = database["concept_dict"][f'<{concept_name}>']["image"]
+            # ret_image_path = database["concept_dict"][f'<{concept_name}>']["image"]
             if isinstance(database["concept_dict"][f'<{concept_name}>']["image"], list):  # FIX: changed concept to concept_name
                 ret_path = database["concept_dict"][f'<{concept_name}>']["image"][0]  # FIX: changed concept to concept_name
             else:  # FIX: added else clause for non-list case
@@ -222,6 +223,7 @@ def prepare_test_recognition_items(
                 "name": query_name,
                 "query_path": query_path,
                 "ret_path": ret_path,  # FIX: changed comma to colon
+                "ret_category":database["concept_dict"][f'<{concept_name}>']['category'],  # FIX: changed tag to concept_name
                 "ret_info": ret_info,    
                 "question": f"Is <{concept_name}> in the first image? Answer in yes or no.",
                 "solution": 'yes' if query_name == concept_name else 'no'
@@ -242,6 +244,7 @@ def run_inference_loop(
     batch_size: int = 8,
     max_new_tokens: int = 128,
     device: torch.device = None,
+    use_description: bool = False
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Run recognition inference over items.
@@ -286,7 +289,11 @@ def run_inference_loop(
             except Exception:
                 ret_images.append(Image.new("RGB", (224, 224)))
         questions = [it["question"] for it in batch]
-        problems = [get_prompt(it['ret_info'], it["question"]) for it in batch]
+        # problems = [get_prompt(it['ret_info'], it["question"]) for it in batch]
+        if use_description:
+            problems = [get_listener_prompt_with_description(it['ret_info'], it["question"]) for it in batch]
+        else:
+            problems = [get_listener_prompt_no_description(it['concept_name'], it["ret_category"], it["question"]) for it in batch]
         solutions = [it["solution"] for it in batch]
         query_paths = [it["query_path"] for it in batch]
         ref_paths = [it["ret_path"] for it in batch]
@@ -393,7 +400,7 @@ def parse_args():
     # Task-specific args
     parser.add_argument("--retrieval_json", type=str, default=None,
                         help="Path to retrieval JSON. If not set, auto-generated from args.")
-
+    parser.add_argument("--use_description", action="store_true", help="Whether to include reference description in the prompt")
     return parser.parse_args()
 
 
@@ -448,7 +455,7 @@ def main():
 
     # Determine retrieval JSON path
     manifests_dir = Path("manifests") / args.data_name
-    catalog_path = str(manifests_dir / f'main_catalog_seed_{args.seed}.json')
+    catalog_path = str(manifests_dir / args.catalog_file)
 
     LOG.info("Loading retrieval data from %s", catalog_path)
     # Prepare items
@@ -466,6 +473,7 @@ def main():
         temperature=args.temperature,
         batch_size=args.batch_size,
         max_new_tokens=args.max_new_tokens,
+        use_description=args.use_description
     )
 
     # Save results
@@ -474,8 +482,10 @@ def main():
         outdir = outdir / args.concept_name
     outdir = outdir / f"seed_{args.seed}"
     outdir.mkdir(parents=True, exist_ok=True)
-
-    outpath = outdir / f"recognition_model_{args.model_type}_db_{args.db_type}.json"
+    if args.use_description:
+        outpath = outdir / f"recognition_model_{args.model_type}_db_{args.db_type}_with_desc.json"
+    else:
+        outpath = outdir / f"recognition_model_{args.model_type}_db_{args.db_type}_no_desc.json"
     save_results(results, metrics, vars(args), outpath)
 
     LOG.info("Overall Accuracy: %.4f (%d/%d)", metrics['accuracy'], metrics['correct'], metrics['total'])

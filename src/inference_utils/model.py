@@ -13,7 +13,7 @@ def setup_model(model_name_or_path, use_peft=False, device="cuda"):
     Setup the Qwen 2.5 VL model and processor with optimizations.
     """
     from transformers import Qwen2VLForConditionalGeneration
-    processor = AutoProcessor.from_pretrained(model_name_or_path)
+    processor = AutoProcessor.from_pretrained("/leonardo_work/IscrB_SMIALLM/ddas/.cache/huggingface/hub/models--Qwen--Qwen2-VL-7B-Instruct/snapshots/eed13092ef92e448dd6875b2a00151bd3f7db0ac/")
     if use_peft:
         from peft import PeftConfig, PeftModel
         config = PeftConfig.from_pretrained(model_name_or_path)

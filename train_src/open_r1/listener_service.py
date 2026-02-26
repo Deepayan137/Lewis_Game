@@ -286,12 +286,16 @@ def score(req: ScoreRequest):
     try:
         try:
             yes_probs = listener.score_candidates(req.candidate_paths, req.question, batch_size=1)
+            max_prob = max(yes_probs) if yes_probs else 0.0
+            total = sum(yes_probs) if sum(yes_probs) > 0 else 1.0
             # max(1, len(req.candidate_paths)))
         except Exception as e:
             print(f"[LISTENER ERROR] score() failed: {e}")
             return {"error": str(e)}
         predicted = int(torch.tensor(yes_probs).argmax().item()) if len(yes_probs)>0 else -1
-        return {"yes_probabilities": yes_probs, "predicted_index": predicted, "took": time.time()-start}
+        soft = yes_probs[predicted] / total if predicted < len(yes_probs) else 0.0
+        reward_score = soft if max_prob >= 0.3 else soft * 0.5
+        return {"yes_probabilities": yes_probs, "predicted_index": predicted, "reward_score": reward_score,"took": time.time()-start}
     finally:
         try:
             _infer_semaphore.release()
@@ -358,11 +362,15 @@ def batch_score(req: BatchScoreRequest):
             # split flattened probabilities back to per-item lists
             cur = 0
             for (orig_idx, _), cnt in zip(group, counts):
-                sub = yes_probs_flat[cur: cur + cnt] if cnt > 0 else []
+                yes_probs = yes_probs_flat[cur: cur + cnt] if cnt > 0 else []
                 cur += cnt
-                predicted = int(torch.tensor(sub).argmax().item()) if len(sub) > 0 else -1
-                results[orig_idx] = {"yes_probabilities": sub, "predicted_index": predicted}
-        print(f"[results]->{results}")
+                predicted = int(torch.tensor(yes_probs).argmax().item()) if len(yes_probs) > 0 else -1
+                max_prob = max(yes_probs) if yes_probs else 0.0
+                total = sum(yes_probs) if sum(yes_probs) > 0 else 1.0
+                soft = yes_probs[predicted] / total if predicted < len(yes_probs) else 0.0
+                reward_score = soft if max_prob >= 0.3 else soft * 0.5
+                results[orig_idx] = {"yes_probabilities": yes_probs, "predicted_index": predicted, "reward_score": reward_score}
+        # print(f"[results]->{results}")
         took = time.time() - start
         return {"results": results, "took": took}
 
@@ -383,7 +391,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9000)
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-VL-7B-Instruct")
     parser.add_argument("--use_8bit", action="store_true")
     parser.add_argument("--device", type=str, default="cuda:0")
     args = parser.parse_args()

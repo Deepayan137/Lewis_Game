@@ -95,16 +95,33 @@ def parse_descriptions(output, category=None):
                 the_pattern = re.search(r'(The [A-Za-z]+[^\n]{20,200}?\.)', output)
                 if the_pattern:
                     result["detailed"] = the_pattern.group(1).strip()
+    # ========== Extract State ==========
+    # Strategy 1: Try with both tags
+    detailed_match = re.search(r'<state>(.*?)</state>', output, re.DOTALL)
     
+    if detailed_match:
+        result["state"] = detailed_match.group(1).strip()
+    else:
+        result["state"] = ""
+    
+    # ========== Extract Location ==========
+    # Strategy 1: Try with both tags
+    detailed_match = re.search(r'<location>(.*?)</location>', output, re.DOTALL)
+    if detailed_match:
+        result["location"] = detailed_match.group(1).strip()
+    else:
+        result["location"] = ""
     # ========== Cleanup ==========
     # Remove any remaining XML tags
     result["coarse"] = re.sub(r'</?[^>]+>', '', result["coarse"]).strip()
     result["detailed"] = re.sub(r'</?[^>]+>', '', result["detailed"]).strip()
-    
+    result["state"] = re.sub(r'</?[^>]+>', '', result["state"]).strip()
+    result["location"] = re.sub(r'</?[^>]+>', '', result["location"]).strip()
     # Remove extra whitespace
     result["coarse"] = ' '.join(result["coarse"].split())
     result["detailed"] = ' '.join(result["detailed"].split())
-    
+    result["state"] = ' '.join(result["state"].split())
+    result["location"] = ' '.join(result["location"].split())
     return result
 
 # # Usage

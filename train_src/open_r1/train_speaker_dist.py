@@ -28,7 +28,8 @@ from dist_helpers import *
 from math_verify import parse, verify
 from open_r1.logger import PredictionLogger
 from open_r1.trainer import Qwen2VLGRPOTrainer, Qwen2VLGRPOVLLMTrainer
-from speaker_service import parse_descriptions
+# from speaker_service import parse_descriptions
+from rouge_helpers import to_str, split_sentences, rouge_2_sw
 
 logger = PredictionLogger(log_path=os.getenv("LOG_PATH"))
 
@@ -127,17 +128,35 @@ def parse_descriptions(output, category=None):
                 the_pattern = re.search(r'(The [A-Za-z]+[^\n]{20,200}?\.)', output)
                 if the_pattern:
                     result["detailed"] = the_pattern.group(1).strip()
+    # ========== Extract State ==========
+    # Strategy 1: Try with both tags
+    detailed_match = re.search(r'<state>(.*?)</state>', output, re.DOTALL)
     
+    if detailed_match:
+        result["state"] = detailed_match.group(1).strip()
+    else:
+        result["state"] = ""
+    
+    # ========== Extract Location ==========
+    # Strategy 1: Try with both tags
+    detailed_match = re.search(r'<location>(.*?)</location>', output, re.DOTALL)
+    if detailed_match:
+        result["location"] = detailed_match.group(1).strip()
+    else:
+        result["location"] = ""
     # ========== Cleanup ==========
     # Remove any remaining XML tags
     result["coarse"] = re.sub(r'</?[^>]+>', '', result["coarse"]).strip()
     result["detailed"] = re.sub(r'</?[^>]+>', '', result["detailed"]).strip()
-    
+    result["state"] = re.sub(r'</?[^>]+>', '', result["state"]).strip()
+    result["location"] = re.sub(r'</?[^>]+>', '', result["location"]).strip()
     # Remove extra whitespace
     result["coarse"] = ' '.join(result["coarse"].split())
     result["detailed"] = ' '.join(result["detailed"].split())
-    str_result = result['coarse'] + ' ' +result['detailed']
-    return str_result
+    result["state"] = ' '.join(result["state"].split())
+    result["location"] = ' '.join(result["location"].split())
+    str_result = result['coarse'] + '. ' +result['detailed']
+    return str_result, result
 
 @dataclass
 class GRPOScriptArguments(ScriptArguments):
@@ -215,22 +234,9 @@ def _call_listener_batch(batch_requests, timeout=LISTENER_TIMEOUT,
         payload = {"batch": chunk}
         attempt = 0
         chunk_success = False
-        # while attempt <= max_retries:
-            # try:
-                # attempt += 1
-                # if attempt == 1:
-                #     sample = chunk[0] if chunk else None
-                    # print(f"[CLIENT] listener call {url} chunk={start}:{end} size={len(chunk)} sample={sample}")
         r = sess.post(url, json=payload, timeout=180)
         r.raise_for_status()
-                # parse JSON
-                # try:
         resp = r.json()
-                # except Exception as e:
-                #     print(f"[WARN] listener returned non-json body for chunk {start}:{end}: {e}; body head: {r.text[:400]!r}")
-                #     raise
-
-                # expected: {"results":[...], "took":...} or a list
         if isinstance(resp, dict) and "results" in resp:
             res = resp["results"]
         elif isinstance(resp, list):
@@ -239,7 +245,6 @@ def _call_listener_batch(batch_requests, timeout=LISTENER_TIMEOUT,
             print(f"[WARN] unexpected JSON format for chunk {start}:{end}: {type(resp)}; resp keys: {list(resp.keys()) if isinstance(resp, dict) else 'N/A'}")
             res = neutral_resp_slice(chunk)
         results_all.extend(res)
-    # final safety: ensure we return exactly one response per request
     if len(results_all) != total:
         print(f"[WARN] results length mismatch: got {len(results_all)} expected {total}; filling remainder with neutral responses")
         # pad if needed
@@ -277,8 +282,9 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
     for i, content in enumerate(contents):
         cat = categories[i]
         # content_clean = extract_answer_content(content)
-        content_clean = parse_descriptions(content)
-        question = f'Does the description -> "{content_clean}" match the {cat} in the image? Answer in yes or no.'
+        content_clean, _ = parse_descriptions(content)
+        # question = f'Does the description -> "{content_clean}" match the {cat} in the image? Answer in yes or no.'
+        question = f'Does this description "{content_clean}" accurately describe the main subject in the image? Answer yes or no.'
         candidate_paths = path_candidates[i]
         key = (tuple(candidate_paths), question)
         local_keys.append(key)
@@ -365,15 +371,17 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
                 except Exception:
                     yes_probs = [0.0] * len(path_candidates[i])
             predicted_index = int(res.get("predicted_index", -1))
-        prediction = names[predicted_index]
+            soft_reward_score = res.get("reward_score", 0.0)
+        prediction = names[predicted_index] if predicted_index >=0  else "<none>"
         target = solution[i]
-        reward = 1.0 if (prediction == target and predicted_index >= 0) else 0.0
+        # reward = 1.0 if (prediction == target and predicted_index >= 0) else 0.0
+        reward = soft_reward_score
         rewards.append(reward)
         # optional logging
         if logger is not None:
             # content_clean = extract_answer_content(content)
-            content_clean = parse_descriptions(content)
-            logger.log(reward, content_clean, target_index)
+            content_clean, _ = parse_descriptions(content)
+            logger.log(reward, content_clean, target)
 
         # debug file logging (only rank0's LOCAL_RANK==0 writes)
         if os.getenv("DEBUG_MODE", "false").lower() == "true" and os.getenv("LOCAL_RANK", "0") == "0":
@@ -382,15 +390,48 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
             try:
                 with open(log_path, "a", encoding="utf-8") as f:
                     f.write(f"------------- {current_time} | Rank: {os.getenv('LOCAL_RANK', '0')} | Accuracy reward: {reward} -------------\n")
-                    f.write(f"content: {parse_descriptions(content)}\n")
+                    f.write(f"content: {content_clean}\n")
                     f.write(f"sol: {solution[i]}\n")
                     f.write(f"prediction: {prediction}, target_index: {target}\n")
                     f.flush()
             except Exception as e:
                 if logger is not None:
-                    logger.log(f"Logging error: {e}", parse_descriptions(content), target_index)
+                    logger.log(f"Logging error: {e}", content_clean, target)
 
     return rewards
+
+def overlap_penalty(completions, solution, logger=None, **kwargs):
+    completion_contents = [completion[0]["content"] for completion in completions]
+    rewards = []
+    for content in completion_contents:
+        try:
+            _, concept = parse_descriptions(content)
+        except Exception:
+            rewards.append(0.0)
+            continue
+        detailed_text = to_str(concept.get("detailed", ""))
+        state_text    = to_str(concept.get("state", ""))
+        location_text = to_str(concept.get("location", ""))
+        reference   = (state_text + " " + location_text).strip()
+        sentences = split_sentences(detailed_text)
+        sentence_scores = []
+
+        for sent in sentences:
+            r2_sw  = rouge_2_sw(sent, reference)
+            sentence_scores.append({
+                "sentence":   sent,
+                "rouge_2_sw": round(r2_sw, 4)
+            })
+
+        sw_scores = [s["rouge_2_sw"] for s in sentence_scores]
+        max_sw_score = round(max(sw_scores), 4) if sw_scores else 0.0
+        if logger and max_sw_score > 0:
+            top = max(sentence_scores, key=lambda x: x["rouge_2_sw"])
+            logger.log(f"overlap_penalty fired: {max_sw_score:.3f} | '{top['sentence'][:80]}'")
+        reward = -max_sw_score  # negative reward for high overlap
+        rewards.append(reward)
+    return rewards
+
 
 def format_reward(completions, **kwargs):
     """
@@ -417,77 +458,60 @@ def format_reward(completions, **kwargs):
         score = 0.0
 
         if re.search(r'<thinking>.*?</thinking>', model_output, re.DOTALL):
-            score += 0.2
+            score += 0.34
         if re.search(r'<coarse>.*?</coarse>', model_output, re.DOTALL):
-            score += 0.2
+            score += 0.33
         if re.search(r'<detailed>.*?</detailed>', model_output, re.DOTALL):
-            score += 0.2
-        if re.search(r'<state>.*?</state>', model_output, re.DOTALL):
-            score += 0.2
-        if re.search(r'<location>.*?</location>', model_output, re.DOTALL):
-            score += 0.2
+            score += 0.33
+        # if re.search(r'<state>.*?</state>', model_output, re.DOTALL):
+        #     score += 0.2
+        # if re.search(r'<location>.*?</location>', model_output, re.DOTALL):
+        #     score += 0.2
 
-        rewards.append(score)
+        rewards.append(round(score, 2))
 
     return rewards
 
 def length_reward(completions, logger=None, **kwargs):
     """
-    Reward if the model's <answer> contains exactly one sentence.
-    Otherwise, reward = 0.
+    Penalizes <detailed> longer than 1 sentence and <coarse> outside 5-7 words.
     """
     rewards = []
-    answer_re = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
-
     completion_contents = [c[0]["content"] for c in completions]
-    for i, content in enumerate(completion_contents):
-        # Isolate the assistant-generated part (same trick as format_reward)
-        parts = content.split('assistant\n')
-        model_output = parts[-1] if len(parts) > 1 else content
 
-        # Extract <answer> block
-        m = answer_re.search(model_output.strip())
-        if m:
-            answer_text = m.group(1).strip()
-        else:
-            try:
-                answer_text = extract_answer_content(model_output)  # your helper
-            except Exception:
-                answer_text = model_output.strip()
+    for content in completion_contents:
+        _, parsed = parse_descriptions(content)
+        score = 0.0
 
-        # --- Sentence counting heuristic ---
-        # Split by . ! ? followed by whitespace or end-of-string
-        sentences = re.split(r'[.!?](?:\s|$)', answer_text)
-        # Remove empty strings
-        sentences = [s.strip() for s in sentences if s.strip()]
-        reward = 0.1 if len(sentences) == 1 else 0.0
-        rewards.append(reward)
+        # Penalize multi-sentence <detailed>
+        detailed = parsed.get("detailed", "").strip()
+        sentences = [s.strip() for s in re.split(r'[.!?](?:\s|$)', detailed) if s.strip()]
+        detailed_words = len(detailed.split())
+        if len(sentences) > 1:
+            score -= 0.2
+        elif detailed_words < 16: 
+            score -= 0.2
+        # Penalize <coarse> outside expected word count
+        coarse = parsed.get("coarse", "").strip()
+        if not (5 <= len(coarse.split()) <= 7):
+            score -= 0.1
 
-        # Optional logging
+        rewards.append(score)
+
         if logger is not None:
-            logger.log({"one_sentence_reward": reward,
-                        "answer_text": answer_text,
-                        "n_sentences": len(sentences)})
-
-        if os.getenv("DEBUG_MODE", "false").lower() == "true" and os.getenv("LOCAL_RANK", "0") == "0":
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_path = f'debug_files/debug_one_sentence_rank{os.getenv("LOCAL_RANK", "0")}.txt'
-            try:
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"--- {current_time} | Rank {os.getenv('LOCAL_RANK','0')} | Reward: {reward} ---\n")
-                    f.write(f"Answer: {answer_text}\n")
-                    f.write(f"Sentence count: {len(sentences)}\n\n")
-                    f.flush()
-            except Exception as e:
-                if logger is not None:
-                    logger.log(f"One-sentence logging error: {e}", answer_text)
+            logger.log({
+                "length_reward": score,
+                "detailed_sentence_count": len(sentences),
+                "coarse_word_count": len(coarse.split()),
+            })
 
     return rewards
 
 reward_funcs_registry = {
     "accuracy": accuracy_reward,
     "format": format_reward,
-    "length": length_reward
+    "length": length_reward,
+    "overlap": overlap_penalty,
 }
 
 SYSTEM_PROMPT = (
@@ -537,7 +561,7 @@ def make_conversation_lewis_game(example):
     }
 
 def main(script_args, training_args, model_args, lora_args):
-    script_args.reward_funcs = ['accuracy', 'format']
+    script_args.reward_funcs = ['accuracy', 'format', 'length']
     print(script_args)
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
     from datasets import load_dataset

@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
         help="Evaluation type (determines input filename format)"
     )
     parser.add_argument("--k", type=int, default=3, help="Number of retrieval candidates (for recall eval_type)")
+    parser.add_argument('--use_desc', action='store_true', help="Whether to use results with descriptions (for recognition eval_type)")
     return parser.parse_args()
 
 
@@ -54,7 +55,10 @@ def get_result_filename(args: argparse.Namespace) -> str:
     """Generate the expected result filename based on evaluation type."""
     if args.eval_type == "recall":
         return f"results_model_{args.model_type}_db_{args.db_type}_k_{args.k}.json"
-    return f"recognition_model_{args.model_type}_db_{args.db_type}.json"
+    if args.use_desc:
+        return f"recognition_model_{args.model_type}_db_{args.db_type}_with_desc.json"
+    else:
+        return f"recognition_model_{args.model_type}_db_{args.db_type}_no_desc.json"
 
 
 def main() -> int:
@@ -183,11 +187,18 @@ def main() -> int:
     # Report and save
     print(f"total concepts: {total_concepts_seen}")
     print(f"results showing for concepts: {total_concepts_with_file}")
-
-    save_path = (
-        Path("results") / dataset /
-        f"recognition_model_{args.model_type}_db_{args.db_type}_seed_{args.seed}.json"
-    )
+    if args.use_desc:
+        print("Using results with descriptions.")
+        save_path = (
+            Path("results") / dataset /
+            f"recognition_model_{args.model_type}_db_{args.db_type}_seed_{args.seed}_use_desc.json"
+        )
+    else:
+        print("Using results without descriptions.")
+        save_path = (
+            Path("results") / dataset /
+            f"recognition_model_{args.model_type}_db_{args.db_type}_seed_{args.seed}_no_desc.json"
+        )
     save_json(results, save_path)
     print(f"Saved metrics at {save_path}")
     print(results["metrics"])

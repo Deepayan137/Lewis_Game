@@ -272,36 +272,49 @@ class HierarchicalClipRetriever():
                 return part
         return None
     
-    def create_training_batch(self, query_image_path, remaining_paths, category, num_distractors=4, random_negative=False, selection_strategy='most_similar', easy_pos_prob=0.0):
+    def create_training_batch(self, query_image_path, remaining_paths, category, num_distractors=4,
+                              random_negative=False, selection_strategy='most_similar',
+                              easy_pos_prob=0.0):
         """
-        Create a complete training batch for Lewis game
-        Returns query path, distractor paths, and target index (always 0)
+        Create a complete training batch for Lewis game.
+
+        Standard mode:
+            - Speaker sees: query_image_path (single view)
+            - Listener pool: [hard_positive (alt view), neg1, neg2]
         """
         if self.with_negative:
-            distractors = self.hierarchical_distractor_sampling_with_negatives(query_image_path, num_distractors, selection_strategy=selection_strategy)
+            distractors = self.hierarchical_distractor_sampling_with_negatives(
+                query_image_path, num_distractors, selection_strategy=selection_strategy)
         else:
-            distractors = self.hierarchical_distractor_sampling(query_image_path, num_distractors, selection_strategy=selection_strategy)
+            distractors = self.hierarchical_distractor_sampling(
+                query_image_path, num_distractors, selection_strategy=selection_strategy)
 
+        
         try:
-            new_query_image_path = self.get_alternate_query(query_image_path, remaining_paths, random_negative=random_negative, easy_pos_prob=easy_pos_prob)
+            new_query_image_path = self.get_alternate_query(
+                query_image_path, remaining_paths,
+                random_negative=random_negative, easy_pos_prob=easy_pos_prob)
         except Exception as e:
             print(f"Problem at query: {query_image_path}")
             new_query_image_path = query_image_path
+
         all_image_paths = [new_query_image_path]
         all_image_paths.extend([d['image_path'] for d in distractors])
         random.shuffle(all_image_paths)
         target_index = all_image_paths.index(new_query_image_path)
+
         return {
             'image_paths': all_image_paths,
             'target_index': target_index,
-            'query_path': query_image_path,
+            'query_path': query_image_path,  # single path in standard mode
             'distractor_info': distractors,
-            'category':category
+            'category': category,
         }
 
 def main():
     parser = argparse.ArgumentParser(description="Create training batches for Lewis game")
     parser.add_argument('--category', type=str, default="clothe")
+    parser.add_argument('--model_type', type=str, default="original_7b")
     parser.add_argument('--split', type=str, default="train")
     parser.add_argument('--catalog_file', type=str, default="manifests/PerVA/train_combined_concepts_seed_23.json")
     parser.add_argument('--distractors', type=int, default=2)
@@ -338,28 +351,40 @@ def main():
         image_paths = data[category][concept][args.split]
         for image_path in image_paths:
             remaining_paths = [item for item in data[category][concept][args.split] if item != image_path]
-            batch = retriever.create_training_batch(image_path, remaining_paths, category, num_distractors=args.distractors, 
-                random_negative=args.random_negative, selection_strategy=selection_strategy, easy_pos_prob=args.easy_pos_prob)
+            batch = retriever.create_training_batch(
+                image_path, remaining_paths, category,
+                num_distractors=args.distractors,
+                random_negative=args.random_negative,
+                selection_strategy=selection_strategy,
+                easy_pos_prob=args.easy_pos_prob)
             concept_list.append({
-                "query_path":batch['query_path'],
-                "ret_paths":batch['image_paths'],
-                'label':batch['target_index'],
-                'category':batch['category'],
+                "query_path": batch['query_path'],
+                "ret_paths": batch['image_paths'],
+                'label': batch['target_index'],
+                'category': batch['category'],
             })
     if args.for_recognition:
         import sys;sys.path.append('./src')
         from inference_utils.prompts import get_description_prompt
-        from inference_utils.common  import PERVA_CATEGORY_MAP
+        from inference_utils.common  import PERVA_CATEGORY_MAP, set_seed, get_model_config
         from inference_utils.model import setup_model, speaker_describes_batch
         from inference_utils.cleanup import parse_descriptions
         from copy import deepcopy
         from generate_descriptions import process_batch_efficiently
         from PIL import Image
-        model_name_or_path = "Qwen/Qwen2-VL-7B-Instruct"
-        speaker_model, processor = setup_model(model_name_or_path)
+        set_seed(args.seed)
+        model_config = get_model_config(
+            args.model_type,
+            dataset='PerVA',
+            seed=args.seed,
+        )
+        model_name_or_path = model_config['path']
+        use_peft = model_config['use_peft']
+        print(f"Loading model from {model_name_or_path} (use_peft={use_peft})")
+        speaker_model, processor = setup_model(model_name_or_path, use_peft=use_peft)
         # concept_list_copy = concept_list.deepcopy()
         batch_items = []
-        concept_list = concept_list[:4]
+        # concept_list = concept_list[:4]
         num_samples = len(concept_list)
         num_refs = []
         for item in concept_list:
@@ -368,7 +393,7 @@ def main():
             num_refs.append(len(item['ret_paths']))
             for ref_path in item['ret_paths']:
             # ref_path = item['ret_paths'][0]
-                name = ref_path.split('/')[-3]
+                name = ref_path.split('/')[-2]
                 batch_items.append({
                     'image': Image.open(ref_path).convert('RGB'),
                     'name': name,
@@ -385,7 +410,7 @@ def main():
                 parsed = parse_descriptions(desc[0])
                 coarse = parsed["coarse"] or f"A photo of a {category}"
                 detailed = parsed["detailed"]
-                ref_concept_description = f"Name: {ref_concept_name}\n" + "Description: " + coarse + ". " + detailed
+                ref_concept_description = f"Name: {ref_concept_name}\n" + "Description: " + coarse + " " + detailed
                 ret_descs.append(ref_concept_description)
                 idx += 1  # Increment after processing each reference
             concept_list[i]['ret_descs'] = ret_descs
@@ -397,7 +422,7 @@ def main():
     if base_catalog.startswith("validation") and split_tag:
         save_file = f'val_retrieval_top{K}_{split_tag}.json'
     elif split_tag:
-        save_file = f'retrieval_top{K}_{split_tag}.json'
+        save_file = f'retrieval_top{K}_{split_tag}_{args.model_type}.json'
     else:
         save_file = f'retrieval_top{K}.json'
 
@@ -412,12 +437,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# for i, (cat, ref_path, desc) in enumerate(raw_results):
-        #     parsed = parse_descriptions(desc[0])
-        #     desc_clean = {
-        #         "coarse": [parsed["coarse"] or f"A photo of a {cat}"],
-        #         "detailed": [parsed["detailed"]],
-        #     }
-            # concept_list[i]['for_recognition'] = {"ref_path": ref_path, "descriptions": desc_clean}

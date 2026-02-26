@@ -16,6 +16,22 @@ from typing import List, Optional
 # ============================================================================
 
 def get_description_prompt(category: str) -> str:
+    problem = (
+            f'Provide two descriptions of the {category} in the image:\n'
+            f'1. A coarse 5-6 word description starting with "A photo of a "\n'
+            f'2. A detailed description: Describe the {category} so it can be distinguished from other {category}s. '
+            "Do NOT mention background, location or state. "
+            "If the image contains a person, avoid mentioning clothing or accessories. "
+            f'Write exactly one fluent sentence beginning with "The " and highlighting 3-4 visible distinguishing attributes. '
+            "Keep it concise and natural, without lists or brackets.\n\n"
+            "Output format:\n"
+            "<thinking>Your reasoning</thinking>\n"
+            f"<coarse>A photo of a ...</coarse>\n"
+            f"<detailed>The ...</detailed>"
+        )
+    return problem
+
+def get_detailed_description_prompt(category: str) -> str:
     """
     Generate prompt for creating attribute-focused descriptions.
 

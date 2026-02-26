@@ -74,7 +74,6 @@ DREAMBOOTH_CATEGORY_MAP = {
     'wolf_plushie': 'toy'
 }
 
-# YoLLaVA dataset
 YOLLAVA_CATEGORY_MAP = {
     'ciin': 'person',
     'denisdang': 'person',
@@ -116,7 +115,51 @@ YOLLAVA_CATEGORY_MAP = {
     'elephant': 'toy',
     'shiba-gray': 'toy',
     'dragon': 'toy'
-}
+    }
+
+# YoLLaVA dataset
+# YOLLAVA_CATEGORY_MAP = {
+#     'ciin': 'woman',
+#     'denisdang': 'man',
+#     'khanhvy': 'woman',
+#     'oong': 'man',
+#     'phuc-map': 'man',
+#     'thao': 'woman',
+#     'thuytien': 'woman',
+#     'viruss': 'man',
+#     'yuheng': 'man',
+#     'willinvietnam': 'man',
+#     'chua-thien-mu': 'building',
+#     'nha-tho-hanoi': 'building',
+#     'nha-tho-hcm': 'building',
+#     'thap-but': 'building',
+#     'thap-cham': 'building',
+#     'dug': 'cartoon character',
+#     'fire': 'cartoon character',
+#     'marie-cat': 'cartoon character',
+#     'toodles-galore': 'cartoon character',
+#     'water': 'cartoon character',
+#     'bo': 'dog',
+#     'butin': 'dog',
+#     'henry': 'cat',
+#     'mam': 'cat',
+#     'mydieu': 'cat',
+#     'shiba-yellow': 'toy',
+#     'pusheen-cup': 'mug',
+#     'neurips-cup': 'toy',
+#     'tokyo-keyboard': 'electronic',
+#     'cat-cup': 'cup',
+#     'brown-duck': 'toy',
+#     'lamb': 'toy',
+#     'duck-banana': 'toy',
+#     'shiba-black': 'toy',
+#     'pig-cup': 'cup',
+#     'shiba-sleep': 'toy',
+#     'yellow-duck': 'toy',
+#     'elephant': 'toy',
+#     'shiba-gray': 'toy',
+#     'dragon': 'toy'
+# }
 
 # MyVLM dataset
 MYVLM_CATEGORY_MAP = {
@@ -135,7 +178,7 @@ MYVLM_CATEGORY_MAP = {
     'gold_pineapple': 'household object',
     'iverson_funko_pop': 'toy',
     'green_doll': 'toy',
-    'maeve_dog': 'pet animal',
+    'maeve_dog': 'dog',
     'minion_toy': 'toy',
     'rabbit_toy': 'toy',
     'red_chicken': 'figurine',
@@ -147,8 +190,8 @@ MYVLM_CATEGORY_MAP = {
     'sheep_toy': 'toy',
     'skulls_mug': 'mug',
     'small_penguin': 'toy',
-    'billy_dog': 'pet animal',
-    'my_cat': 'pet animal'
+    'billy_dog': 'dog',
+    'my_cat': 'cat'
 }
 
 # PerVA short-to-long category names
@@ -204,39 +247,35 @@ MODEL_CONFIGS = {
         'path': "Qwen/Qwen2-VL-7B-Instruct",
         'use_peft': False,
     },
-    # LoRA-finetuned models (path templates)
-    # 'lora_7b_grpo': {
-    #     'path_template': "{share_models}/Qwen2-VL-7B_GRPO_lewis_PerVA_seed_{seed}_r1024_a64_K_3_subset30",
-    #     'use_peft': True,
-    # },
-    'lora_7b_grpo': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a512_K_3_subset30_500_samples_no_reco",
+    'sp_ft_7b_binary': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_23_r64_a1024_K_3_subset30_sampled_500_1ga",
         'use_peft': True,
     },
-    'lora_7b_grpo_res_fixed': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a256_K_3_subset30_500_samples_res_fixed",
+    'sp_ft_7b_soft': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_23_r64_a1024_K_3_subset30_sampled_500_soft_reward",
         'use_peft': True,
     },
-    'lora_7b_grpo_res_fixed_no_reco': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a256_K_3_subset30_500_samples_res_fixed_no_reco",
+    'sp_ft_7b_soft_concise': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_23_r64_a1024_K_3_subset30_sampled_500_soft_reward_concise",
         'use_peft': True,
     },
-    'lora_7b_grpo_res_fixed_only_reco': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a256_K_3_subset30_500_samples_no_sel_",
+    'no_desc_cross_category_weighted': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_with_no_desc_cross_category_weighted/checkpoint-84",
         'use_peft': True,
-    }
-    # 'lora_7b_grpo_500': {
-    #     'path_template': "{share_models}/Qwen2-VL-7B_GRPO_lewis_PerVA_seed_{seed}_r1024_a64_K_3_subset30_sampled_500",
-    #     'use_peft': True,
-    # },
-    # 'lora_7b_grpo_500_concise': {
-    #     'path_template': "{share_models}/Qwen2-VL-7B_GRPO_lewis_PerVA_seed_{seed}_r1024_a64_K_3_subset30_sampled_500_concise",
-    #     'use_peft': True,
-    # },
-    # 'lora_2b_grpo': {
-    #     'path_template': "{share_models}/Qwen2-VL-2B-Instruct_GRPO_lewis_PerVA_seed_{seed}",
-    #     'use_peft': True,
-    # },
+    },
+    'no_desc_cross_category': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_no_desc_cross_category/checkpoint-42",
+        'use_peft': True,
+    },
+    'with_desc_cross_category_weighted': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_with_desc_cross_category_weighted/checkpoint-42",
+        'use_peft': True,
+    },
+    'with_desc_cross_category':{
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_with_desc_cross_category/checkpoint-42",
+        'use_peft': True,
+    },
+
 }
 
 

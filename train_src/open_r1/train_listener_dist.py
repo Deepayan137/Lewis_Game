@@ -96,6 +96,10 @@ class GRPOScriptArguments(ScriptArguments):
         default=3136,
         metadata={"help": "Minimum number of pixels for the image"},
     )
+    weighted_consistency: bool = field(
+        default=False,
+        metadata={"help": "Use weighted consistency reward instead of binary consistency reward"}
+    )
 
 def extract_reasoning_answer_term(text: str) -> str:
     """
@@ -204,6 +208,91 @@ def consistency_reward(completions, listener_solution, task_type=None, **kwargs)
                     logger.log(f"Logging error: {e}", content, l_sol)
     return rewards
 
+def consistency_reward_weighted(completions, listener_solution, task_type=None, **kwargs):
+    """Consistency task reward with weighted penalties - only process consistency examples
+    
+    Reward structure:
+    - Correct prediction: +1.0
+    - False positive (predicted yes, actual no): -0.7
+    - False negative (predicted no, actual yes): -0.3
+    """
+    rewards = []
+    consistency_count = 0
+    correct_count = 0
+    false_positive_count = 0
+    false_negative_count = 0
+    
+    for completion, l_sol, t_type in zip(completions, listener_solution, task_type):
+        if t_type != 'consistency':
+            # This is a selection task completion, skip it
+            rewards.append(0.0)
+            continue
+        
+        # Extract yes/no from JSON
+        consistency_count += 1
+        content = completion[0]["content"]
+        predicted_answer = extract_yes_no_answer(content)
+        if predicted_answer:
+            predicted_answer = predicted_answer.lower().strip()
+        if l_sol:
+            l_sol = l_sol.lower().strip()
+        
+        is_correct = (predicted_answer == l_sol)
+        
+        # Weighted reward calculation
+        if is_correct:
+            reward = 1.0
+            correct_count += 1
+        elif predicted_answer == "yes" and l_sol == "no":
+            # False positive - model says YES when answer should be NO
+            # This is your main problem! Penalize heavily.
+            reward = -1.0
+            false_positive_count += 1
+        elif predicted_answer == "no" and l_sol == "yes":
+            # False negative - model says NO when answer should be YES
+            # Less problematic, penalize lightly
+            reward = -0.3
+            false_negative_count += 1
+        else:
+            # Malformed answer (couldn't extract yes/no) or None
+            # Treat as incorrect with neutral penalty
+            reward = 0.0
+        
+        rewards.append(reward)
+        
+        # Enhanced logging with detailed metrics
+        if consistency_count > 0:
+            true_accuracy = correct_count / consistency_count
+            fp_rate = false_positive_count / consistency_count
+            fn_rate = false_negative_count / consistency_count
+            # Uncomment for detailed logging:
+            # print(f"[CONSISTENCY WEIGHTED] Acc: {true_accuracy:.3f} | FP: {fp_rate:.3f} (-0.7) | FN: {fn_rate:.3f} (-0.3)")
+        
+        if logger is not None:
+            logger.log(reward, content, l_sol)
+        
+        if os.getenv("DEBUG_MODE", "false").lower() == "true" and os.getenv("LOCAL_RANK", "0") == "0":
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_path = f'debug_files/debug_listener_consistency_weighted_{os.getenv("LOCAL_RANK", "0")}_job_{os.getenv("SLURM_JOB_ID", "unknown")}.txt'
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"------------- {current_time} | Rank: {os.getenv('LOCAL_RANK', '0')} | Weighted reward: {reward:.2f} -------------\n")
+                    f.write(f"content: {content}\n")
+                    f.write(f"predicted: {predicted_answer}, actual: {l_sol}\n")
+                    if reward == -0.7:
+                        f.write(f">>> FALSE POSITIVE (heavy penalty: -0.7)\n")
+                    elif reward == -0.3:
+                        f.write(f">>> FALSE NEGATIVE (light penalty: -0.3)\n")
+                    elif reward == 1.0:
+                        f.write(f">>> CORRECT (+1.0)\n")
+                    f.write(f"Running stats - Accuracy: {true_accuracy:.3f}, FP rate: {fp_rate:.3f}, FN rate: {fn_rate:.3f}\n")
+                    f.flush()
+            except Exception as e:
+                if logger is not None:
+                    logger.log(f"Logging error: {e}", content, l_sol)
+    
+    return rewards
+
 def format_reward(completions, **kwargs):
     """
     Reward = 1.0 if the model output follows the strict JSON format:
@@ -242,6 +331,7 @@ reward_funcs_registry = {
     "accuracy": accuracy_reward,
     "format": format_reward,
     "consistency": consistency_reward,
+    "consistency_weighted": consistency_reward_weighted,
     
 }
 
@@ -292,7 +382,8 @@ def make_conversation_lewis_game(example):
     }
 
 def main(script_args, training_args, model_args, lora_args):
-    script_args.reward_funcs = ['consistency', 'format']
+    consistency_reward = 'consistency_weighted' if script_args.weighted_consistency else 'consistency'
+    script_args.reward_funcs = [consistency_reward, 'format']
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
     from datasets import load_dataset
     dataset_path = script_args.dataset_name

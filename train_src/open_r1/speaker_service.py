@@ -149,7 +149,7 @@ def parse_descriptions(output, category=None):
 
 
 class SpeakerService(ListenerService):
-    def __init__(self, model_name="Qwen/Qwen2-VL-7B-Instruct", device: str = "cuda:0", use_peft=True):
+    def __init__(self, model_name="Qwen/Qwen2.5-VL-2B-Instruct", device: str = "cuda:0", use_peft=True):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.model_name = model_name
         load_kwargs = {"torch_dtype": torch.float16, "device_map": {"": device}}
@@ -162,13 +162,13 @@ class SpeakerService(ListenerService):
                 model = Qwen2VLForConditionalGeneration.from_pretrained(
                     config.base_model_name_or_path,
                     torch_dtype=torch.float16,
-                    attn_implementation="sdpa",
+                    attn_implementation="flash_attention_2",
                     device_map=device,)
             elif 'Qwen/Qwen2.5-VL' in model_name:
                 model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                     config.base_model_name_or_path, 
                     torch_dtype=torch.float16,
-                    attn_implementation="sdpa",
+                    attn_implementation="flash_attention_2",
                     device_map=device,)
             else:
                 raise ValueError(f"Incorrect model name: {model_name}")
@@ -178,13 +178,13 @@ class SpeakerService(ListenerService):
             if 'Qwen/Qwen2.5-VL' in model_name:
                 self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                     model_name, 
-                    attn_implementation="sdpa", 
+                    attn_implementation="flash_attention_2", 
                     trust_remote_code=True, 
                     **load_kwargs)
             elif 'Qwen/Qwen2-VL' in model_name:
                 self.model = Qwen2VLForConditionalGeneration.from_pretrained(
                     model_name, 
-                    attn_implementation="sdpa", 
+                    attn_implementation="flash_attention_2", 
                     trust_remote_code=True, 
                     **load_kwargs)
             else:
@@ -244,7 +244,7 @@ class SpeakerService(ListenerService):
 
         return outputs
     
-    def describe_images(self, candidate_paths: List[str], question: str, max_new_tokens=256, batch_size: int = 8):
+    def describe_images(self, candidate_paths: List[str], question: str, max_new_tokens=128, batch_size: int = 8):
         """
         Score a list of candidate_paths. Returns yes_probabilities list aligned with candidate_paths.
         Uses fp32 log_softmax on CPU for stable numeric results and decodes fallback if scores missing.
@@ -285,7 +285,7 @@ speaker: Optional[SpeakerService] = None
 def startup():
     global speaker
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-VL-7B-Instruct")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--device", type=str, default="cuda:0")
     args, _ = parser.parse_known_args()
     print("[speaker_service] starting up, loading model...")
@@ -387,7 +387,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9000)
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-VL-7B-Instruct")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-VL-2B-Instruct")
     parser.add_argument("--device", type=str, default="cuda:0")
     args = parser.parse_args()
 
