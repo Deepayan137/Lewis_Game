@@ -374,12 +374,13 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
             soft_reward_score = res.get("reward_score", 0.0)
         prediction = names[predicted_index] if predicted_index >=0  else "<none>"
         target = solution[i]
-        # reward = 1.0 if (prediction == target and predicted_index >= 0) else 0.0
-        reward = soft_reward_score
+        # reward = 1.0 if (prediction == target and predicted_index >= 0) else 0.0 # for binary reward
+        reward = soft_reward_score if (prediction == target and predicted_index >= 0) else 0.0 # for soft reward
+        # reward = soft_reward_score
         rewards.append(reward)
         # optional logging
         if logger is not None:
-            # content_clean = extract_answer_content(content)
+            # content   _clean = extract_answer_content(content)
             content_clean, _ = parse_descriptions(content)
             logger.log(reward, content_clean, target)
 
@@ -489,11 +490,11 @@ def length_reward(completions, logger=None, **kwargs):
         detailed_words = len(detailed.split())
         if len(sentences) > 1:
             score -= 0.2
-        elif detailed_words < 16: 
+        elif detailed_words < 20: 
             score -= 0.2
         # Penalize <coarse> outside expected word count
         coarse = parsed.get("coarse", "").strip()
-        if not (5 <= len(coarse.split()) <= 7):
+        if not (6 <= len(coarse.split()) <= 8):
             score -= 0.1
 
         rewards.append(score)

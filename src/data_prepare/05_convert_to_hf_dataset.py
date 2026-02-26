@@ -149,148 +149,122 @@ def sample_random_image_from_different_category(ret_data, query_category):
     # reference_description = entry['for_recognition']['descriptions']['coarse'][0] + '. ' + entry['for_recognition']['descriptions']['detailed'][0]
     return reference_path, reference_description
 
-def json_to_dataset_dict(input_filename, with_negative, cross_category, use_description, multi_view=False, sp_detailed=False):
+def json_to_dataset_dict(input_filename, with_negative, cross_category, use_description, task='speaker', multi_view=False, sp_detailed=False):
+    """Build an HF DatasetDict from a combined retrieval JSON.
+
+    Args:
+        task: 'speaker' — emit only fields needed by train_speaker_dist.py
+                          [image, ret_paths, names, speaker_problem, solution, category]
+              'listener' — emit only fields needed by train_listener_dist.py
+                          [query_image_path, reference_image_path,
+                           query_image, reference_image,
+                           listener_problem, listener_solution]
+    """
     retrieval_json_path = input_filename
     with open(retrieval_json_path, "r") as f:
         data = json.load(f)
     rows = []
-    # model_name_or_path = "Qwen/Qwen2-VL-7B-Instruct"
-    # speaker_model, processor = setup_model(model_name_or_path)
+
+    perva_category_map = {
+        'veg': 'vegetable',
+        'decoration': 'decoration object',
+        'retail': 'retail object',
+        'tro_bag': 'trolley bag',
+    }
+
     for idx, item in enumerate(tqdm(data, desc="Processing retrieval entries")):
-        # accept either field name
-        ret_list = item.get("retrieved_paths") or item.get("ret_paths") or item.get("ret_paths", [])
+        # accept either field name for backward compat
+        ret_list = item.get("retrieved_paths") or item.get("ret_paths") or []
         query_path_raw = item.get("query_path") or item.get("query")
         if query_path_raw is None:
             continue
+
         view1_abs = _resolve_path('./', query_path_raw)
         query_concept_name = query_path_raw.split('/')[-2]
         category_name      = query_path_raw.split('/')[-3]
+        query_category     = perva_category_map.get(category_name, category_name)
 
-        # make retrieved absolute where possible
         retrieved_abs = [_resolve_path('./', rp) for rp in ret_list]
         names = [string.ascii_uppercase[i] for i in range(len(retrieved_abs))]
 
         if not os.path.exists(view1_abs):
             print(f"Warning: query image not found: {view1_abs}")
 
-        perva_category_map = {
-            'veg': 'vegetable',
-            'decoration': 'decoration object',
-            'retail': 'retail object',
-            'tro_bag': 'trolley bag',
-        }
-        query_category = perva_category_map.get(category_name, category_name)
+        # ── Speaker branch ──────────────────────────────────────────────────
+        if task == 'speaker':
+            view1_image    = Image.open(view1_abs).convert('RGB')
+            speaker_problem = PromptTemplates.get_speaker_prompt(query_category)
+            rows.append({
+                "image":            view1_image,
+                "ret_paths":        retrieved_abs,
+                "names":            names,
+                "speaker_problem":  speaker_problem,
+                "solution":         names[item.get("label")],
+                "category":         query_category,
+            })
+            continue  # skip all listener logic
 
-        # Load speaker image(s)
+        # ── Listener branch ─────────────────────────────────────────────────
         view1_image = Image.open(view1_abs).convert('RGB')
-        speaker_images = view1_image       # single image, original behaviour
-        speaker_problem = PromptTemplates.get_speaker_prompt(query_category)
-        uid = idx
+
         # Target distribution: 50% positive, 50% negative
         is_positive = random.random() < 0.5
-        # import pdb;pdb.set_trace()
+        ref_concept_description = "No description available."  # default
+
         if is_positive:
-            # Sample positive: same concept as query
             positive_candidates = [p for p in retrieved_abs if p.split('/')[-2] == query_concept_name]
-            if positive_candidates:
-                ref_path = random.choice(positive_candidates)
-                ref_index = retrieved_abs.index(ref_path)
-                ref_category = perva_category_map.get(ref_path.split('/')[-3], ref_path.split('/')[-3])
-                # Try to get description from for_recognition if it matches
-                if use_description:
-                    ref_concept_description = item['ret_descs'][ref_index] if ref_index < len(item.get('ret_descs', [])) else "No description available."
-                    # if ref_path == item['for_recognition']['ref_path']:
-                    #     ref_concept_description = item['for_recognition']['descriptions']['coarse'][0] + '. ' + item['for_recognition']['descriptions']['detailed'][0]
-                    # else:
-                    #     ref_concept_description = "No description available."
-                        # name = ref_path.split('/')[-2]
-                        # batch_items = [{
-                        #     'image': Image.open(ref_path).convert('RGB'),
-                        #     'name': name,
-                        #     'problem': get_description_prompt(ref_category),
-                        #     'path': ref_path
-                        # }]
-                        # raw_results = process_batch_efficiently(speaker_model, processor, batch_items=batch_items, max_new_tokens=100)
-                        # _, _, desc = raw_results[0]
-                        # parsed = parse_descriptions(desc[0])
-                        # coarse = parsed["coarse"] or f"A photo of a {ref_category}"
-                        # detailed = parsed["detailed"]
-                        # ref_concept_description = coarse + ". " + detailed
-            else:
-                # Fallback if no positive candidates (shouldn't happen)
-                ref_path = random.choice(retrieved_abs)
-                ref_index = retrieved_abs.index(ref_path)
-                ref_category = perva_category_map.get(ref_path.split('/')[-3], ref_path.split('/')[-3])
-                if use_description:
-                    ref_concept_description = item['ret_descs'][ref_index] if ref_index < len(item.get('ret_descs', [])) else "No description available."
+            candidates = positive_candidates if positive_candidates else retrieved_abs
+            ref_path   = random.choice(candidates)
+            ref_index  = retrieved_abs.index(ref_path)
+            ref_category = perva_category_map.get(ref_path.split('/')[-3], ref_path.split('/')[-3])
+            if use_description:
+                ref_concept_description = (
+                    item['ret_descs'][ref_index]
+                    if ref_index < len(item.get('ret_descs', []))
+                    else "No description available."
+                )
         else:
-            # Sample negative: different concept from query
-            if cross_category and random.random() < 0.4:  # 40% of negatives are cross-category (20% overall)
-                # Sample from different category
+            # cross-category negative (20% overall when cross_category=True)
+            if cross_category and random.random() < 0.4:
                 ref_path, ref_concept_description = sample_random_image_from_different_category(data, category_name)
                 ref_category = perva_category_map.get(ref_path.split('/')[-3], ref_path.split('/')[-3])
             else:
-                # Sample within-category negative (60% of negatives = 30% overall if cross_category, 100% if not)
+                # within-category negative
                 negative_candidates = [p for p in retrieved_abs if p.split('/')[-2] != query_concept_name]
+                candidates = negative_candidates if negative_candidates else retrieved_abs
+                ref_path   = random.choice(candidates)
+                ref_index  = retrieved_abs.index(ref_path)
+                ref_category = perva_category_map.get(ref_path.split('/')[-3], ref_path.split('/')[-3])
+                if use_description:
+                    ref_concept_description = (
+                        item['ret_descs'][ref_index]
+                        if ref_index < len(item.get('ret_descs', []))
+                        else "No description available."
+                    )
 
-                if negative_candidates:
-                    ref_path = random.choice(negative_candidates)
-                    ref_category = perva_category_map.get(ref_path.split('/')[-3], ref_path.split('/')[-3])
-                    ref_index = retrieved_abs.index(ref_path)
-                    # Try to get description from for_recognition if it matches
-                    if use_description:
-                        ref_concept_description = item['ret_descs'][ref_index] if ref_index < len(item.get('ret_descs', [])) else "No description available."
-                        # if ref_path == item['for_recognition']['ref_path']:
-                        #     ref_concept_description = item['for_recognition']['descriptions']['coarse'][0] + '. ' + item['for_recognition']['descriptions']['detailed'][0]
-                        # else:
-                        #     name = ref_path.split('/')[-2]
-                        #     batch_items = [{
-                        #         'image': Image.open(ref_path).convert('RGB'),
-                        #         'name': name,
-                        #         'problem': get_description_prompt(ref_category),
-                        #         'path': ref_path
-                        #     }]
-                        # raw_results = process_batch_efficiently(speaker_model, processor, batch_items=batch_items, max_new_tokens=100)
-                        # _, _, desc = raw_results[0]
-                        # parsed = parse_descriptions(desc[0])
-                        # coarse = parsed["coarse"] or f"A photo of a {ref_category}"
-                        # detailed = parsed["detailed"]
-                        # ref_concept_description = coarse + ". " + detailed
-                else:
-                    # Fallback: use for_recognition even if it might be positive
-                    ref_path = random.choice(retrieved_abs)
-                    ref_index = retrieved_abs.index(ref_path)
-                    ref_category = perva_category_map.get(ref_path.split('/')[-3], ref_path.split('/')[-3])
-                    if use_description:
-                        ref_concept_description = item['ret_descs'][ref_index] if ref_index < len(item.get('ret_descs', [])) else "No description available."
-        reference_image = Image.open(ref_path).convert('RGB')
-        reference_image = reference_image.resize(view1_image.size, Image.LANCZOS)
+        reference_image  = Image.open(ref_path).convert('RGB')
+        reference_image  = reference_image.resize(view1_image.size, Image.LANCZOS)
         ref_concept_name = ref_path.split('/')[-2]
-        test_question = PromptTemplates.get_test_question(ref_concept_name)
+        test_question    = PromptTemplates.get_test_question(ref_concept_name)
+
         if use_description:
             listener_problem = PromptTemplates.get_listener_prompt_with_description(ref_concept_description, test_question)
         else:
             listener_problem = PromptTemplates.get_listener_prompt_no_description(ref_concept_name, ref_category, test_question)
+
         listener_solution = 'yes' if query_concept_name == ref_concept_name else 'no'
+
         rows.append({
-            "image": speaker_images,
-            "ret_paths": retrieved_abs,
-            "names": names,
-            "speaker_problem": speaker_problem,
-            "solution": names[item.get("label")],
-            "category": query_category,
-            "example_idx": uid,
-            "query_image_path": query_path_raw,
+            "query_image_path":     query_path_raw,
             "reference_image_path": ref_path,
-            "query_image": add_marker_to_image(view1_image, marker_text="1"),
-            "reference_image": add_marker_to_image(reference_image, marker_text="2"),
-            "listener_problem": listener_problem,
-            "listener_solution": listener_solution,
+            "query_image":          add_marker_to_image(view1_image,    marker_text="1"),
+            "reference_image":      add_marker_to_image(reference_image, marker_text="2"),
+            "listener_problem":     listener_problem,
+            "listener_solution":    listener_solution,
         })
 
-    # create HF Dataset and DatasetDict
     dataset = Dataset.from_list(rows)
-    ds_dict = DatasetDict({"train": dataset})
+    ds_dict  = DatasetDict({"train": dataset})
     return ds_dict
 
 def print_dataset_statistics(ds_dict: DatasetDict):
@@ -329,43 +303,74 @@ def save_dataset_dict(ds_dict: DatasetDict, save_dirname: str):
 def parse_args():
     ap = argparse.ArgumentParser(description="Convert retrieval JSON to HF Dataset and save to disk.")
     ap.add_argument("--input_filename", default="outputs/PerVA/all/seed_23/retrieval_top3_subset_30.json")
-    ap.add_argument("--seed", type=int, default=23, help="Random seed for reproducibility.")
-    ap.add_argument("--K", type=int, default=3, help="distracors + 1")
-    ap.add_argument("--cross_category", action='store_true', help="Whether to sample negatives from different categories (cross-category) or same category (within-category).")
-    ap.add_argument("--use_description", action='store_true')
+    ap.add_argument("--seed",  type=int, default=23, help="Random seed for reproducibility.")
+    ap.add_argument("--K",     type=int, default=3,  help="Distractors + 1 (retrieval pool size).")
+    ap.add_argument("--task",  choices=['speaker', 'listener'], default='speaker',
+                    help="'speaker': emit [image, ret_paths, names, speaker_problem, solution, category]. "
+                         "'listener': emit [query_image_path, reference_image_path, query_image, "
+                         "reference_image, listener_problem, listener_solution].")
+    ap.add_argument("--cross_category", action='store_true',
+                    help="(Listener only) Allow cross-category negatives (20%% of training examples).")
+    ap.add_argument("--use_description", action='store_true',
+                    help="(Listener only) Use speaker descriptions in the listener prompt.")
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
-    ds = json_to_dataset_dict(args.input_filename, with_negative=False, cross_category=args.cross_category,
-                              use_description=args.use_description)
+    random.seed(args.seed)
+
+    ds = json_to_dataset_dict(
+        args.input_filename,
+        with_negative=False,
+        cross_category=args.cross_category,
+        use_description=args.use_description,
+        task=args.task,
+    )
     print_dataset_statistics(ds)
-    subset_match = re.search(r'subset_(\d+)', args.input_filename)
-    subset = f"subset_{subset_match.group(1)}" if subset_match else None
+
+    # ── Extract subset / sampled tags from filename ────────────────────────
+    subset_match  = re.search(r'subset_(\d+)',  args.input_filename)
     sampled_match = re.search(r'sampled_(\d+)', args.input_filename)
-    sampled = f"sampled_{sampled_match.group(1)}" if sampled_match else None
-    save_dirname = f"PerVA_for_Listener_seed_{args.seed}_K_{args.K}"
-    if subset:
-        save_dirname += f"_{subset}"
-    if sampled:
-        save_dirname += f"_{sampled}"
-    if args.use_description:
-        save_dirname += "_reco_with_desc"
+    sub_tag     = f"sub{subset_match.group(1)}"  if subset_match  else None
+    sampled_tag = f"n{sampled_match.group(1)}"   if sampled_match else None
+
+    # ── Build canonical save dirname ───────────────────────────────────────
+    if args.task == 'speaker':
+        # PerVA_speaker_train_seed{seed}_K{K}[_sub{S}][_n{N}]
+        save_dirname = f"PerVA_speaker_train_seed{args.seed}_K{args.K}"
+        if sub_tag:
+            save_dirname += f"_{sub_tag}"
+        if sampled_tag:
+            save_dirname += f"_{sampled_tag}"
     else:
-        save_dirname += "_reco_no_desc"
-    if args.cross_category:
-        save_dirname += "_cross_category"
-    file_identifier = args.input_filename.split('subset_30_')[1].split('.json')[0]
-    save_dirname += f"_{file_identifier}"
+        # PerVA_listener_train_seed{seed}_K{K}[_sub{S}][_n{N}][_with_desc|_no_desc][_cross_cat][_{model_tag}]
+        save_dirname = f"PerVA_listener_train_seed{args.seed}_K{args.K}"
+        if sub_tag:
+            save_dirname += f"_{sub_tag}"
+        if sampled_tag:
+            save_dirname += f"_{sampled_tag}"
+        save_dirname += "_with_desc" if args.use_description else "_no_desc"
+        if args.cross_category:
+            save_dirname += "_cross_cat"
+        # Append model tag extracted from input filename (token between 'subset_NN_' and '_sampled_N')
+        # e.g. "retrieval_top3_subset_30_original_7b_sampled_500.json" → "original_7b"
+        try:
+            after_subset = re.split(r'subset_\d+_', args.input_filename, maxsplit=1)[1]
+            model_tag = re.sub(r'_sampled_\d+.*', '', after_subset.split('.json')[0])
+            if model_tag:
+                save_dirname += f"_{model_tag}"
+        except IndexError:
+            pass  # no model tag in filename (e.g. plain subset_30.json)
+
     out = save_dataset_dict(ds, save_dirname)
     print(f"Dataset saved in: {save_dirname}")
-    # quick sanity check load
+
+    # quick sanity-check load
     loaded = DatasetDict.load_from_disk(out)
     print("Loaded dataset summary:")
     for k, v in loaded.items():
-        print(f" - split: {k}, n = {len(v)}")
-    # print column names
+        print(f"  split: {k},  n = {len(v)}")
     print("Columns:", loaded["train"].column_names)
 
 

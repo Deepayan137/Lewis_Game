@@ -259,6 +259,14 @@ MODEL_CONFIGS = {
         'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_23_r64_a1024_K_3_subset30_sampled_500_soft_reward_concise",
         'use_peft': True,
     },
+    'lis_ft_7b_with_ori_desc': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_with_desc_cross_category_original_7b_weighted",
+        'use_peft': True,
+    },
+    'lis_ft_7b_with_sp_desc': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_with_desc_cross_category_sp_ft_7b_concise_weighted",
+        'use_peft': True,
+    },
     'no_desc_cross_category_weighted': {
         'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_with_no_desc_cross_category_weighted/checkpoint-84",
         'use_peft': True,
