@@ -180,8 +180,15 @@ class GRPOScriptArguments(ScriptArguments):
         default=3136,
         metadata={"help": "Minimum number of pixels for the image"},
     )
+    listener_reward_mode: str = field(
+        default="soft_gated",
+        metadata={"help": "Listener reward mode: 'binary' (1/0), "
+                        "'soft_gated' (soft only if correct), "
+                        "'soft_always' (soft regardless of correctness)."},
+    )
 
 LISTENER_URL = os.environ.get("LISTENER_URL", "http://127.0.0.1:9000/batch_score")
+LISTENER_REWARD_MODE = os.environ.get("LISTENER_REWARD_MODE", "soft_gated")
 LISTENER_TIMEOUT = float(os.environ.get("LISTENER_TIMEOUT", 30.0))  # seconds
 _listener_cache = {}
 # Defaults you can tune via environment variables:
@@ -266,6 +273,8 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
     - Each rank then computes per-example rewards from the (now-updated) local cache.
     """
     global _listener_cache
+
+    print(f"[accuracy_reward] listener_reward_mode={LISTENER_REWARD_MODE}")
 
     contents = [completion[0]["content"] for completion in completions]
     n = len(contents)
@@ -358,6 +367,7 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
         key = local_keys[i]
         res = _listener_cache.get(key, None)
         print(f"[RESULTS] -> {res}")
+        soft_reward_score = 0.0  # safe default for all reward modes
         if res is None:
             yes_probs = [0.0] * len(path_candidates[i])
             predicted_index = -1
@@ -374,9 +384,13 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
             soft_reward_score = res.get("reward_score", 0.0)
         prediction = names[predicted_index] if predicted_index >=0  else "<none>"
         target = solution[i]
-        # reward = 1.0 if (prediction == target and predicted_index >= 0) else 0.0 # for binary reward
-        reward = soft_reward_score if (prediction == target and predicted_index >= 0) else 0.0 # for soft reward
-        # reward = soft_reward_score
+        correct = (prediction == target and predicted_index >= 0)
+        if LISTENER_REWARD_MODE == "binary":
+            reward = 1.0 if correct else 0.0
+        elif LISTENER_REWARD_MODE == "soft_always":
+            reward = soft_reward_score
+        else:  # "soft_gated" (default)
+            reward = soft_reward_score if correct else 0.0
         rewards.append(reward)
         # optional logging
         if logger is not None:
@@ -390,10 +404,10 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
             log_path = f'debug_files/debug_speaker_{os.getenv("LOCAL_RANK", "0")}_job_{os.getenv("SLURM_JOB_ID", "unknown")}.txt'
             try:
                 with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"------------- {current_time} | Rank: {os.getenv('LOCAL_RANK', '0')} | Accuracy reward: {reward} -------------\n")
+                    f.write(f"------------- {current_time} | Rank: {os.getenv('LOCAL_RANK', '0')} | Accuracy reward: {reward} | reward_mode: {LISTENER_REWARD_MODE} -------------\n")
                     f.write(f"content: {content_clean}\n")
                     f.write(f"sol: {solution[i]}\n")
-                    f.write(f"prediction: {prediction}, target_index: {target}\n")
+                    f.write(f"prediction: {prediction}, target_index: {target}, correct: {correct}, soft_score: {soft_reward_score:.4f}\n")
                     f.flush()
             except Exception as e:
                 if logger is not None:
@@ -562,6 +576,7 @@ def make_conversation_lewis_game(example):
     }
 
 def main(script_args, training_args, model_args, lora_args):
+    global LISTENER_REWARD_MODE
     script_args.reward_funcs = ['accuracy', 'format', 'length']
     print(script_args)
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
@@ -615,4 +630,5 @@ class LoRAArgs:
 if __name__ == "__main__":
     parser = TrlParser((GRPOScriptArguments, GRPOConfig, ModelConfig, LoRAArgs))
     script_args, training_args, model_args, lora_args = parser.parse_args_and_config()
+    LISTENER_REWARD_MODE = script_args.listener_reward_mode
     main(script_args, training_args, model_args, lora_args)
