@@ -247,43 +247,34 @@ MODEL_CONFIGS = {
         'path': "Qwen/Qwen2-VL-7B-Instruct",
         'use_peft': False,
     },
-    'sp_ft_7b_binary': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_23_r64_a1024_K_3_subset30_sampled_500_1ga",
+    'sp_concise_soft_gated': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_{seed}_r64_a1024_K3_sub30_n500_soft_gated",
         'use_peft': True,
     },
-    'sp_ft_7b_soft': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_23_r64_a1024_K_3_subset30_sampled_500_soft_reward",
+    'sp_concise_binary': {
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_{seed}_r64_a1024_K3_sub30_n500_binary",
         'use_peft': True,
     },
-    'sp_ft_7b_soft_concise': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_23_r64_a1024_K_3_subset30_sampled_500_soft_reward_concise",
+    'sp_concise_only':{
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_{seed}_r64_a1024_K3_sub30_n500_only_length",
         'use_peft': True,
     },
-    'lis_ft_7b_with_ori_desc': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_with_desc_cross_category_original_7b_weighted",
+    'ls_original_7b':{
+        "path_template": "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a256_K3_sub30_n500_with_desc_cross_cat_original_7b",
+        "use_peft": True,
+    },
+    'ls_original_7b_no_wt':{
+        "path_template": "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a256_K3_sub30_n500_with_desc_cross_cat_original_7b_non_weighted_consistency", #
+        "use_peft": True,
+    },
+    'ls_soft_gated':{
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a256_K3_sub30_n500_with_desc_cross_cat_sp_concise_soft_gated",
         'use_peft': True,
     },
-    'lis_ft_7b_with_sp_desc': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_with_desc_cross_category_sp_ft_7b_concise_weighted",
+    'ls_soft_gated_no_wt':{
+        'path_template':"{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a256_K3_sub30_n500_with_desc_cross_cat_sp_concise_soft_gated_non_weighted_consistency", #
         'use_peft': True,
-    },
-    'no_desc_cross_category_weighted': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_with_no_desc_cross_category_weighted/checkpoint-84",
-        'use_peft': True,
-    },
-    'no_desc_cross_category': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_no_desc_cross_category/checkpoint-42",
-        'use_peft': True,
-    },
-    'with_desc_cross_category_weighted': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_with_desc_cross_category_weighted/checkpoint-42",
-        'use_peft': True,
-    },
-    'with_desc_cross_category':{
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_23_r64_a256_K_3_subset30_500_with_desc_cross_category/checkpoint-42",
-        'use_peft': True,
-    },
-
+    }
 }
 
 

@@ -415,25 +415,12 @@ def main():
     LOG.info("Args: %s", args)
 
     # Load database
-    if 'refined' in args.db_type:
-        database_path = get_database_path(
-            args.data_name, args.category, args.seed, 'original_7b'
-        )
-
-    else:
-        database_path = get_database_path(
-            args.data_name, args.category, args.seed, args.db_type
-        )
+    
+    database_path = get_database_path(
+        args.data_name, args.category, args.seed, args.db_type
+    )
     LOG.info("Loading database from %s", database_path)
     database = load_database(database_path)
-    if 'refined' in args.db_type:
-        descriptions = load_database(Path(f"outputs/{args.data_name}/all/seed_{args.seed}/descriptions_original_7b_location_and_state_refined.json"))
-        database = copy_descriptions_to_database(database, descriptions)
-        # database_path = get_database_path(
-        #     args.data_name, args.category, args.seed, 'original_7b_location_and_state_refined'
-        # )
-        # with open(database_path, 'w') as f:
-        #     json.dump(database, f, indent=2)
         
     # Get model configuration
     try:
