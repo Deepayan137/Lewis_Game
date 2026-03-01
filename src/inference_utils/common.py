@@ -248,7 +248,7 @@ MODEL_CONFIGS = {
         'use_peft': False,
     },
     'sp_concise_soft_gated': {
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_{seed}_r64_a1024_K3_sub30_n500_soft_gated",
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_{seed}_r64_a1024_K3_sub30_n500_soft_gated/",
         'use_peft': True,
     },
     'sp_concise_binary': {
@@ -257,6 +257,10 @@ MODEL_CONFIGS = {
     },
     'sp_concise_only':{
         'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_{seed}_r64_a1024_K3_sub30_n500_only_length",
+        'use_peft': True,
+    },
+    'sp_accuracy_only':{
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Speaker_PerVA_seed_{seed}_r64_a1024_K3_sub30_n500_no_length/",
         'use_peft': True,
     },
     'ls_original_7b':{
@@ -268,7 +272,7 @@ MODEL_CONFIGS = {
         "use_peft": True,
     },
     'ls_soft_gated':{
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a256_K3_sub30_n500_with_desc_cross_cat_sp_concise_soft_gated",
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a256_K3_sub30_n500_with_desc_cross_cat_sp_concise_soft_gated/checkpoint-21/",
         'use_peft': True,
     },
     'ls_soft_gated_no_wt':{
