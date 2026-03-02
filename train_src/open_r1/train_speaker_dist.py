@@ -188,6 +188,7 @@ class GRPOScriptArguments(ScriptArguments):
     )
 
 LISTENER_URL = os.environ.get("LISTENER_URL", "http://127.0.0.1:9000/batch_score")
+LISTENER_ABLATION_URL = os.environ.get("LISTENER_ABLATION_URL", "http://127.0.0.1:9001/batch_score")
 LISTENER_REWARD_MODE = os.environ.get("LISTENER_REWARD_MODE", "soft_gated")
 LISTENER_TIMEOUT = float(os.environ.get("LISTENER_TIMEOUT", 30.0))  # seconds
 _listener_cache = {}
@@ -264,6 +265,75 @@ def _call_listener_batch(batch_requests, timeout=LISTENER_TIMEOUT,
 
     return results_all
 
+def _call_listener_batch_ablation(batch_requests, timeout=LISTENER_TIMEOUT,
+                                   max_retries=DEFAULT_MAX_RETRIES,
+                                   backoff_factor=DEFAULT_BACKOFF,
+                                   chunk_size=DEFAULT_LISTENER_CHUNK_SIZE,
+                                   chunk_delay=DEFAULT_CHUNK_DELAY):
+    """
+    Ablation variant of _call_listener_batch for the two-image reference-matching task.
+
+    batch_requests: list of dicts with keys {"query_paths": [...], "reference_paths": [...], "question": "..."}
+    Returns: list of responses aligned with batch_requests.
+    Neutral fallback uses len(query_paths) to size the yes_probabilities list.
+    """
+    if not batch_requests:
+        return []
+
+    url = os.environ.get("LISTENER_ABLATION_URL", "http://127.0.0.1:9001/batch_score")
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+
+    no_proxy_env = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    no_proxy_hosts = [h.strip() for h in no_proxy_env.split(",") if h.strip()]
+    use_trust_env = host in no_proxy_hosts
+
+    sess = requests.Session()
+    sess.trust_env = bool(use_trust_env)
+
+    results_all = []
+    total = len(batch_requests)
+    connect_timeout = min(5.0, timeout)
+    read_timeout = timeout
+
+    # Neutral fallback: size probabilities by number of query_paths (one per pair)
+    def neutral_resp_slice(slice_requests):
+        return [{"yes_probabilities": [0.0] * len(req.get("query_paths", [])), "predicted_index": -1}
+                for req in slice_requests]
+
+    for start in range(0, total, chunk_size):
+        end = min(start + chunk_size, total)
+        chunk = batch_requests[start:end]
+        payload = {"batch": chunk}
+        try:
+            r = sess.post(url, json=payload, timeout=180)
+            r.raise_for_status()
+            resp = r.json()
+            if isinstance(resp, dict) and "results" in resp:
+                res = resp["results"]
+            elif isinstance(resp, list):
+                res = resp
+            else:
+                print(f"[ABLATION WARN] unexpected JSON format for chunk {start}:{end}: {type(resp)}; "
+                      f"resp keys: {list(resp.keys()) if isinstance(resp, dict) else 'N/A'}")
+                res = neutral_resp_slice(chunk)
+        except Exception as e:
+            print(f"[ABLATION WARN] _call_listener_batch_ablation failed for chunk {start}:{end}: {e}")
+            res = neutral_resp_slice(chunk)
+        results_all.extend(res)
+
+    if len(results_all) != total:
+        print(f"[ABLATION WARN] results length mismatch: got {len(results_all)} expected {total}; "
+              f"filling remainder with neutral responses")
+        while len(results_all) < total:
+            i = len(results_all)
+            req = batch_requests[i]
+            results_all.append({"yes_probabilities": [0.0] * len(req.get("query_paths", [])), "predicted_index": -1})
+        results_all = results_all[:total]
+
+    return results_all
+
+
 def accuracy_reward_new(completions, solution, logger=None, **kwargs):
     """
     Distributed-aware accuracy reward with rank-0 chunked listener calls and local caching.
@@ -295,7 +365,8 @@ def accuracy_reward_new(completions, solution, logger=None, **kwargs):
         content_clean, _ = parse_descriptions(content)
         # question = f'Does the description -> "{content_clean}" match the {cat} in the image? Answer in yes or no.'
         question = (
-            f"Does the exact same subject appear in both images? Here is a description of the subject in the second image: '{content_clean}'. Answer yes or no."
+            f"You are given two images and a text description. The second image shows a subject described as: '{content_clean}'. "
+            f"Does the first image show the same individual? Answer yes or no."
         )
         # question = f'Does this description "{content_clean}" accurately describe the main subject in the image? Answer yes or no.'
         query_paths = all_query_paths[i]
@@ -338,9 +409,9 @@ def accuracy_reward_new(completions, solution, logger=None, **kwargs):
                 chunk = unique_payloads[i: i + chunk_size]
                 # Call the client helper which includes its own retry/inner-chunking logic
                 try:
-                    chunk_results = _call_listener_batch(chunk)
+                    chunk_results = _call_listener_batch_ablation(chunk)
                 except Exception as e:
-                    print(f"[WARN] _call_listener_batch failed for chunk {i}:{i+len(chunk)}: {e}")
+                    print(f"[WARN] _call_listener_batch_ablation failed for chunk {i}:{i+len(chunk)}: {e}")
                     # fallback neutral results for this chunk
                     chunk_results = [{"yes_probabilities": [0.0] * len(p["query_paths"]), "predicted_index": -1} for p in chunk]
 
@@ -430,7 +501,6 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
 
     contents = [completion[0]["content"] for completion in completions]
     n = len(contents)
-    import pdb;pdb.set_trace()
     path_candidates = kwargs.get('ret_paths')
     names_list = kwargs.get('names')
     categories = kwargs.get('category')
@@ -676,6 +746,7 @@ def length_reward(completions, logger=None, **kwargs):
 
 reward_funcs_registry = {
     "accuracy": accuracy_reward,
+    "accuracy_ablation": accuracy_reward_new,
     "format": format_reward,
     "length": length_reward,
     "overlap": overlap_penalty,
@@ -729,7 +800,9 @@ def make_conversation_lewis_game(example):
 
 def main(script_args, training_args, model_args, lora_args):
     global LISTENER_REWARD_MODE
-    script_args.reward_funcs = ['accuracy','format']
+    # Use reward_funcs from CLI (--reward_funcs); fall back to default if empty
+    if not script_args.reward_funcs:
+        script_args.reward_funcs = ['accuracy', 'format']
     print(script_args)
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
     from datasets import load_dataset
