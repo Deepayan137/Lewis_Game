@@ -272,7 +272,7 @@ MODEL_CONFIGS = {
         "use_peft": True,
     },
     'ls_soft_gated':{
-        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a256_K3_sub30_n500_with_desc_cross_cat_sp_concise_soft_gated/checkpoint-21/",
+        'path_template': "{share_models}/Qwen2-VL-7B_GRPO_Listener_PerVA_seed_{seed}_r64_a256_K3_sub30_n500_with_desc_cross_cat_sp_concise_soft_gated/",
         'use_peft': True,
     },
     'ls_soft_gated_no_wt':{

@@ -246,7 +246,7 @@ def consistency_reward_weighted(completions, listener_solution, task_type=None, 
         elif predicted_answer == "yes" and l_sol == "no":
             # False positive - model says YES when answer should be NO
             # This is your main problem! Penalize heavily.
-            reward = -0.7
+            reward = -1.0
             false_positive_count += 1
         elif predicted_answer == "no" and l_sol == "yes":
             # False negative - model says NO when answer should be YES

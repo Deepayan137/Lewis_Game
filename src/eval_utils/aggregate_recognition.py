@@ -115,8 +115,11 @@ def main() -> int:
                 continue
 
             total_concepts_with_file += 1
-            data = load_json(concept_path)
-
+            try:
+                data = load_json(concept_path)
+            except Exception as e:
+                log_debug(f"{category},{name},load_error,{str(e)}")
+                continue
             # Extract metrics
             correct_yes = int(data["metrics"]["correct_yes"])
             total_yes = int(data["metrics"]["total_yes"])
@@ -199,8 +202,8 @@ def main() -> int:
             Path("results") / dataset /
             f"recognition_model_{args.model_type}_db_{args.db_type}_seed_{args.seed}_no_desc.json"
         )
-    save_json(results, save_path)
-    print(f"Saved metrics at {save_path}")
+    # save_json(results, save_path)
+    # print(f"Saved metrics at {save_path}")
     print(results["metrics"])
 
     return 0

@@ -264,6 +264,158 @@ def _call_listener_batch(batch_requests, timeout=LISTENER_TIMEOUT,
 
     return results_all
 
+def accuracy_reward_new(completions, solution, logger=None, **kwargs):
+    """
+    Distributed-aware accuracy reward with rank-0 chunked listener calls and local caching.
+    - Only rank 0 calls the external listener service.
+    - Rank 0 dedups unique payloads, sends them in chunks to the listener (safe for memory),
+      and broadcasts only the newly-fetched cache entries to all ranks.
+    - Each rank then computes per-example rewards from the (now-updated) local cache.
+    """
+    global _listener_cache
+
+    print(f"[accuracy_reward] listener_reward_mode={LISTENER_REWARD_MODE}")
+
+    contents = [completion[0]["content"] for completion in completions]
+    n = len(contents)
+    # path_candidates = kwargs.get('ret_paths')
+    all_query_paths = kwargs.get('query_image_path')
+    all_reference_paths = kwargs.get('reference_image_path')
+    names_list = kwargs.get('names')
+    categories = kwargs.get('category')
+    if all_query_paths is None or all_reference_paths is None:
+        return [0.0] * n
+    # Build local requests and keys
+    local_requests = []      # payloads this rank needs (for gather)
+    local_indices = []       # indices into the local batch that correspond to each payload
+    local_keys = []          # key for each local example (used to lookup rewards later)
+    for i, content in enumerate(contents):
+        cat = categories[i]
+        # content_clean = extract_answer_content(content)
+        content_clean, _ = parse_descriptions(content)
+        # question = f'Does the description -> "{content_clean}" match the {cat} in the image? Answer in yes or no.'
+        question = (
+            f"Does the exact same subject appear in both images? Here is a description of the subject in the second image: '{content_clean}'. Answer yes or no."
+        )
+        # question = f'Does this description "{content_clean}" accurately describe the main subject in the image? Answer yes or no.'
+        query_paths = all_query_paths[i]
+        reference_paths = all_reference_paths[i]
+        key = (tuple(query_paths), question)
+        local_keys.append(key)
+        if key not in _listener_cache:
+            payload = {"query_paths":  query_paths, "reference_paths": reference_paths,"question": question}
+            local_requests.append(payload)
+            local_indices.append(i)
+
+    # Distributed gather: collect all ranks' local_requests to everyone (fallback helper handles non-dist)
+    gathered_requests = dist_all_gather_object_fallback(local_requests)  # list-of-lists (len=world_size)
+
+    world_rank, world_size = get_world_info()
+
+    # Rank 0: dedupe and call listener in safe chunks
+    if world_rank == 0:
+        seen = set()
+        unique_payloads = []
+        unique_keys = []
+        # flatten gathered requests and dedupe
+        for rank_list in gathered_requests:
+            for payload in rank_list or []:
+                # Suggestion for a better key: use a tuple of (question, tuple of sorted candidate_paths)
+                # This ensures the key is order-invariant for candidate_paths and robust to accidental list/tuple differences.
+                key = (payload["question"], tuple(sorted(payload["query_paths"])))
+                if key not in seen:
+                    seen.add(key)
+                    unique_payloads.append(payload)
+                    unique_keys.append(key)
+
+        # If there are unique payloads, call listener in chunks to avoid huge single request
+        new_entries = {}
+        if unique_payloads:
+            # choose chunk size (can be tuned via env)
+            chunk_size = int(os.environ.get("LISTENER_CHUNK_SIZE", "4"))
+            # If the listener-caller already does internal chunking, this outer chunking is defensive.
+            for i in range(0, len(unique_payloads), chunk_size):
+                chunk = unique_payloads[i: i + chunk_size]
+                # Call the client helper which includes its own retry/inner-chunking logic
+                try:
+                    chunk_results = _call_listener_batch(chunk)
+                except Exception as e:
+                    print(f"[WARN] _call_listener_batch failed for chunk {i}:{i+len(chunk)}: {e}")
+                    # fallback neutral results for this chunk
+                    chunk_results = [{"yes_probabilities": [0.0] * len(p["query_paths"]), "predicted_index": -1} for p in chunk]
+
+                # map chunk results to keys and update local rank0 cache
+                for payload_item, res in zip(chunk, chunk_results):
+                    k = (tuple(payload_item["query_paths"]), payload_item["question"])
+                    # store result in global cache (rank0's view)
+                    _listener_cache[k] = res
+                    new_entries[k] = res
+        else:
+            new_entries = {}  # nothing new
+
+    else:
+        # non-zero ranks expect to receive new_entries broadcasted from rank 0
+        new_entries = None
+
+    # Broadcast only the new entries (small dict) from rank 0 to all ranks
+    # Use the safe object-broadcast helper (handles older PyTorch with pickle fallback)
+    new_entries = dist_broadcast_object_fallback(new_entries, src=0)
+
+    # Merge received new entries into local cache
+    if new_entries:
+        _listener_cache.update(new_entries)
+
+    # Now compute rewards locally using the (now-consistent) cache
+    rewards = []
+    for i, content in enumerate(contents):
+        names = names_list[i]
+        key = local_keys[i]
+        res = _listener_cache.get(key, None)
+        print(f"[RESULTS] -> {res}")
+        soft_reward_score = 0.0  # safe default for all reward modes
+        if res is None:
+            yes_probs = [0.0] * len(all_query_paths[i])
+            predicted_index = -1
+        else:
+            yes_probs = res.get("yes_probabilities", res.get("yes_probs", []))
+            # coerce to list if needed
+            if not isinstance(yes_probs, list):
+                try:
+                    import numpy as _np
+                    yes_probs = list(_np.array(yes_probs).tolist())
+                except Exception:
+                    yes_probs = [0.0] * len(all_query_paths[i])
+            predicted_index = int(res.get("predicted_index", -1))
+            soft_reward_score = res.get("reward_score", 0.0)
+        prediction = names[predicted_index] if predicted_index >=0  else "<none>"
+        target = solution[i]
+        correct = (prediction == target and predicted_index >= 0)
+        reward = 1.0 if correct else 0.0
+        rewards.append(reward)
+        # optional logging
+        if logger is not None:
+            # content   _clean = extract_answer_content(content)
+            content_clean, _ = parse_descriptions(content)
+            logger.log(reward, content_clean, target)
+
+        # debug file logging (only rank0's LOCAL_RANK==0 writes)
+        if os.getenv("DEBUG_MODE", "false").lower() == "true" and os.getenv("LOCAL_RANK", "0") == "0":
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_path = f'debug_files/debug_speaker_{os.getenv("LOCAL_RANK", "0")}_job_{os.getenv("SLURM_JOB_ID", "unknown")}.txt'
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"------------- {current_time} | Rank: {os.getenv('LOCAL_RANK', '0')} | Accuracy reward: {reward} | reward_mode: {LISTENER_REWARD_MODE} -------------\n")
+                    f.write(f"content: {content_clean}\n")
+                    f.write(f"sol: {solution[i]}\n")
+                    f.write(f"prediction: {prediction}, target_index: {target}, correct: {correct}, soft_score: {soft_reward_score:.4f}\n")
+                    f.flush()
+            except Exception as e:
+                if logger is not None:
+                    logger.log(f"Logging error: {e}", content_clean, target)
+
+    return rewards
+
+
 def accuracy_reward(completions, solution, logger=None, **kwargs):
     """
     Distributed-aware accuracy reward with rank-0 chunked listener calls and local caching.
@@ -278,7 +430,7 @@ def accuracy_reward(completions, solution, logger=None, **kwargs):
 
     contents = [completion[0]["content"] for completion in completions]
     n = len(contents)
-
+    import pdb;pdb.set_trace()
     path_candidates = kwargs.get('ret_paths')
     names_list = kwargs.get('names')
     categories = kwargs.get('category')
@@ -577,7 +729,7 @@ def make_conversation_lewis_game(example):
 
 def main(script_args, training_args, model_args, lora_args):
     global LISTENER_REWARD_MODE
-    script_args.reward_funcs = ['accuracy', 'format', 'length']
+    script_args.reward_funcs = ['accuracy','format']
     print(script_args)
     reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
     from datasets import load_dataset
