@@ -296,13 +296,13 @@ def _call_listener_batch_ablation(batch_requests, timeout=LISTENER_TIMEOUT,
     connect_timeout = min(5.0, timeout)
     read_timeout = timeout
 
-    # Neutral fallback: size probabilities by number of query_paths (one per pair).
+    # Neutral fallback: one [yes, no] pair per query path, predicted_index=1 (abstain → "no").
     # Guard against query_paths being a plain string (dataset stores single path).
     def neutral_resp_slice(slice_requests):
         def _n_pairs(req):
             qp = req.get("query_paths", [])
             return 1 if isinstance(qp, str) else len(qp)
-        return [{"yes_probabilities": [0.0] * _n_pairs(req), "predicted_index": -1}
+        return [{"yes_no_probabilities": [[0.0, 1.0]] * _n_pairs(req), "predicted_index": 1}
                 for req in slice_requests]
 
     for start in range(0, total, chunk_size):
@@ -332,7 +332,9 @@ def _call_listener_batch_ablation(batch_requests, timeout=LISTENER_TIMEOUT,
         while len(results_all) < total:
             i = len(results_all)
             req = batch_requests[i]
-            results_all.append({"yes_probabilities": [0.0] * len(req.get("query_paths", [])), "predicted_index": -1})
+            qp = req.get("query_paths", [])
+            n = 1 if isinstance(qp, str) else len(qp)
+            results_all.append({"yes_no_probabilities": [[0.0, 1.0]] * n, "predicted_index": 1})
         results_all = results_all[:total]
 
     return results_all
@@ -422,7 +424,7 @@ def accuracy_reward_new(completions, solution, logger=None, **kwargs):
                 except Exception as e:
                     print(f"[WARN] _call_listener_batch_ablation failed for chunk {i}:{i+len(chunk)}: {e}")
                     # fallback neutral results for this chunk
-                    chunk_results = [{"yes_probabilities": [0.0] * len(p["query_paths"]), "predicted_index": -1} for p in chunk]
+                    chunk_results = [{"yes_no_probabilities": [[0.0, 1.0]] * len(p["query_paths"]), "predicted_index": 1} for p in chunk]
 
                 # map chunk results to keys and update local rank0 cache
                 for payload_item, res in zip(chunk, chunk_results):
@@ -462,7 +464,7 @@ def accuracy_reward_new(completions, solution, logger=None, **kwargs):
             yes_probs = [0.0] * len(all_query_paths[i])
             predicted_index = -1
         else:
-            yes_probs = res.get("max_probabilities", 0.0)
+            yes_probs = res.get("yes_no_probabilities", res.get("yes_probabilities", res.get("yes_probs", [])))
             # coerce to list if needed
             if not isinstance(yes_probs, list):
                 try:
@@ -472,9 +474,8 @@ def accuracy_reward_new(completions, solution, logger=None, **kwargs):
                     yes_probs = [0.0] * len(all_query_paths[i])
             predicted_index = int(res.get("predicted_index", -1))
             # soft_reward_score = res.get("reward_score", 0.0)
-        import pdb;pdb.set_trace()
-        # prediction = names[predicted_index] if predicted_index >=0  else "<none>"
-        # target = solution[i]
+        # prediction: 0 = yes (same subject), 1 = no (different subject)
+        # target:     0 = positive pair,       1 = negative pair
         correct = (predicted_index == target and predicted_index >= 0)
         reward = 1.0 if correct else 0.0
         rewards.append(reward)

@@ -224,18 +224,23 @@ class ListenerAblationService:
             nid = self.no_token_id
 
             if yid is None or nid is None or yid >= vocab_size or nid >= vocab_size or yid < 0 or nid < 0:
+                # Fallback: decode text and emit [yes_prob, no_prob] pairs
                 if seqs_cpu is None:
-                    yes_probs.extend([0.0] * len(q_chunk))
+                    yes_probs.extend([[0.0, 1.0]] * len(q_chunk))
                 else:
                     decoded = self.processor.batch_decode(seqs_cpu, skip_special_tokens=True)
                     for txt in decoded:
-                        yes_probs.append(1.0 if txt.strip().lower().startswith("yes") else 0.0)
+                        if txt.strip().lower().startswith("yes"):
+                            yes_probs.append([1.0, 0.0])
+                        else:
+                            yes_probs.append([0.0, 1.0])
             else:
                 logp = F.log_softmax(fl_cpu, dim=-1)
                 yes_logps = logp[:, yid]
                 no_logps = logp[:, nid]
                 yes_vs_no = torch.softmax(torch.stack([yes_logps, no_logps], dim=1), dim=1)
-                yes_probs.extend([x for x in yes_vs_no])
+                # Convert each row to a plain Python list [yes_prob, no_prob] for JSON serialisability
+                yes_probs.extend([x.tolist() for x in yes_vs_no])
             # cleanup
             for obj in (gen_out, first_logits, fl_cpu, seqs, seqs_cpu, scores_list, inputs):
                 try:
@@ -338,7 +343,7 @@ def batch_score(req: BatchScoreRequest):
 
             if len(flat_query) == 0:
                 for (orig_idx, _, _) in group:
-                    results[orig_idx] = {"yes_probabilities": [], "predicted_index": -1, "reward_score": 0.0}
+                    results[orig_idx] = {"yes_no_probabilities": [], "predicted_index": -1}
                 continue
 
             try:
@@ -348,21 +353,26 @@ def batch_score(req: BatchScoreRequest):
                 )
             except Exception as e:
                 print(f"[LISTENER_ABLATION ERROR] score_pairs failed: {e}")
-                yes_probs_flat = [0.0] * len(flat_query)
+                # Fallback: neutral [yes, no] pairs — model abstains (no > yes)
+                yes_probs_flat = [[0.0, 1.0]] * len(flat_query)
 
             # Split back to per-item lists
             cur = 0
             for (orig_idx, _, _), cnt in zip(group, counts):
-                yes_no_probs = yes_probs_flat[cur: cur + cnt] if cnt > 0 else []
-                predicted = int(torch.tensor(yes_no_probs[0].detach()).argmax().item()) if len(yes_no_probs) > 0 else -1
+                yn_pairs = yes_probs_flat[cur: cur + cnt] if cnt > 0 else []
                 cur += cnt
-                # predicted = int(torch.tensor(yes_probs).argmax().item()) if len(yes_probs) > 0 else -1
-                max_prob = max(yes_no_probs[0]) if yes_no_probs[0] else 0.0
-                # total = sum(yes_probs) if sum(yes_probs) > 0 else 1.0
-                # soft = yes_probs[predicted] / total if predicted < len(yes_probs) else 0.0
-                # reward_score = soft if max_prob >= 0.3 else soft * 0.5
+                if len(yn_pairs) == 0:
+                    results[orig_idx] = {"yes_no_probabilities": [], "predicted_index": -1}
+                    continue
+                # Each element of yn_pairs is a [yes_prob, no_prob] list.
+                # predicted_index = argmax([yes_prob, no_prob]) for the pair:
+                #   0 → model says "yes" (same subject)
+                #   1 → model says "no"  (different subject)
+                # This aligns with target = 0 (positive pair) or 1 (negative pair).
+                yn = yn_pairs[0]   # single pair per example in the binary ablation
+                predicted = 0 if yn[0] >= yn[1] else 1
                 results[orig_idx] = {
-                    "yes_no_probabilities": yes_no_probs[0] if len(yes_no_probs) > 0 else [],
+                    "yes_no_probabilities": yn_pairs,   # list of [yes_p, no_p]
                     "predicted_index": predicted,
                 }
 
