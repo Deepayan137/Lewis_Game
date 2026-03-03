@@ -34,7 +34,7 @@ import torch.nn.functional as F
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from transformers import Qwen2VLForConditionalGeneration, Qwen2_5_VLForConditionalGeneration, AutoProcessor
 
 # Local/project-specific
@@ -53,6 +53,15 @@ class ScoreRequest(BaseModel):
     reference_paths: List[str]
     question: str
     topk: int = 1
+
+    # Coerce a bare string to a single-element list so the service accepts
+    # both {"query_paths": "path/img.jpg", ...} and {"query_paths": ["path/img.jpg"], ...}
+    @field_validator("query_paths", "reference_paths", mode="before")
+    @classmethod
+    def coerce_to_list(cls, v):
+        if isinstance(v, str):
+            return [v]
+        return v
 
 
 class BatchScoreRequest(BaseModel):

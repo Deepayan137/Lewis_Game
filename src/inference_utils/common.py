@@ -236,7 +236,6 @@ DEFAULT_SHARE_MODELS_DIR = os.environ.get(
     "./share_models"
 )
 
-# Model configurations
 MODEL_CONFIGS = {
     # Base models
     'original_2b': {

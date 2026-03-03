@@ -296,9 +296,13 @@ def _call_listener_batch_ablation(batch_requests, timeout=LISTENER_TIMEOUT,
     connect_timeout = min(5.0, timeout)
     read_timeout = timeout
 
-    # Neutral fallback: size probabilities by number of query_paths (one per pair)
+    # Neutral fallback: size probabilities by number of query_paths (one per pair).
+    # Guard against query_paths being a plain string (dataset stores single path).
     def neutral_resp_slice(slice_requests):
-        return [{"yes_probabilities": [0.0] * len(req.get("query_paths", [])), "predicted_index": -1}
+        def _n_pairs(req):
+            qp = req.get("query_paths", [])
+            return 1 if isinstance(qp, str) else len(qp)
+        return [{"yes_probabilities": [0.0] * _n_pairs(req), "predicted_index": -1}
                 for req in slice_requests]
 
     for start in range(0, total, chunk_size):
@@ -371,6 +375,11 @@ def accuracy_reward_new(completions, solution, logger=None, **kwargs):
         # question = f'Does this description "{content_clean}" accurately describe the main subject in the image? Answer yes or no.'
         query_paths = all_query_paths[i]
         reference_paths = all_reference_paths[i]
+        # Dataset may store a single path string instead of a list — normalise to list
+        if isinstance(query_paths, str):
+            query_paths = [query_paths]
+        if isinstance(reference_paths, str):
+            reference_paths = [reference_paths]
         key = (tuple(query_paths), question)
         local_keys.append(key)
         if key not in _listener_cache:
@@ -458,6 +467,7 @@ def accuracy_reward_new(completions, solution, logger=None, **kwargs):
                     yes_probs = [0.0] * len(all_query_paths[i])
             predicted_index = int(res.get("predicted_index", -1))
             soft_reward_score = res.get("reward_score", 0.0)
+        import pdb;pdb.set_trace()
         prediction = names[predicted_index] if predicted_index >=0  else "<none>"
         target = solution[i]
         correct = (prediction == target and predicted_index >= 0)
