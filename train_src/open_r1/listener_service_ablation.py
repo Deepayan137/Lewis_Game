@@ -234,9 +234,8 @@ class ListenerAblationService:
                 logp = F.log_softmax(fl_cpu, dim=-1)
                 yes_logps = logp[:, yid]
                 no_logps = logp[:, nid]
-                yes_vs_no = torch.softmax(torch.stack([yes_logps, no_logps], dim=1), dim=1)[:, 0].tolist()
-                yes_probs.extend([float(x) for x in yes_vs_no])
-
+                yes_vs_no = torch.softmax(torch.stack([yes_logps, no_logps], dim=1), dim=1)
+                yes_probs.extend([x for x in yes_vs_no])
             # cleanup
             for obj in (gen_out, first_logits, fl_cpu, seqs, seqs_cpu, scores_list, inputs):
                 try:
@@ -354,17 +353,17 @@ def batch_score(req: BatchScoreRequest):
             # Split back to per-item lists
             cur = 0
             for (orig_idx, _, _), cnt in zip(group, counts):
-                yes_probs = yes_probs_flat[cur: cur + cnt] if cnt > 0 else []
+                yes_no_probs = yes_probs_flat[cur: cur + cnt] if cnt > 0 else []
+                predicted = int(torch.tensor(yes_no_probs[0].detach()).argmax().item()) if len(yes_no_probs) > 0 else -1
                 cur += cnt
-                predicted = int(torch.tensor(yes_probs).argmax().item()) if len(yes_probs) > 0 else -1
-                max_prob = max(yes_probs) if yes_probs else 0.0
-                total = sum(yes_probs) if sum(yes_probs) > 0 else 1.0
-                soft = yes_probs[predicted] / total if predicted < len(yes_probs) else 0.0
-                reward_score = soft if max_prob >= 0.3 else soft * 0.5
+                # predicted = int(torch.tensor(yes_probs).argmax().item()) if len(yes_probs) > 0 else -1
+                max_prob = max(yes_no_probs[0]) if yes_no_probs[0] else 0.0
+                # total = sum(yes_probs) if sum(yes_probs) > 0 else 1.0
+                # soft = yes_probs[predicted] / total if predicted < len(yes_probs) else 0.0
+                # reward_score = soft if max_prob >= 0.3 else soft * 0.5
                 results[orig_idx] = {
-                    "yes_probabilities": yes_probs,
+                    "yes_no_probabilities": yes_no_probs[0] if len(yes_no_probs) > 0 else [],
                     "predicted_index": predicted,
-                    "reward_score": reward_score,
                 }
 
         took = time.time() - start

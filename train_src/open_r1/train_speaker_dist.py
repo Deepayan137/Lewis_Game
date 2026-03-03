@@ -448,6 +448,11 @@ def accuracy_reward_new(completions, solution, logger=None, **kwargs):
     # Now compute rewards locally using the (now-consistent) cache
     rewards = []
     for i, content in enumerate(contents):
+        query_path = all_query_paths[i]
+        reference_path = all_reference_paths[i]
+        query_concept = query_path.split('/')[-2] if '/' in query_path else query_path
+        reference_concept = reference_path.split('/')[-2] if '/' in reference_path else reference_path
+        target = 0 if query_concept == reference_concept else 1
         names = names_list[i]
         key = local_keys[i]
         res = _listener_cache.get(key, None)
@@ -457,7 +462,7 @@ def accuracy_reward_new(completions, solution, logger=None, **kwargs):
             yes_probs = [0.0] * len(all_query_paths[i])
             predicted_index = -1
         else:
-            yes_probs = res.get("yes_probabilities", res.get("yes_probs", []))
+            yes_probs = res.get("max_probabilities", 0.0)
             # coerce to list if needed
             if not isinstance(yes_probs, list):
                 try:
@@ -466,11 +471,11 @@ def accuracy_reward_new(completions, solution, logger=None, **kwargs):
                 except Exception:
                     yes_probs = [0.0] * len(all_query_paths[i])
             predicted_index = int(res.get("predicted_index", -1))
-            soft_reward_score = res.get("reward_score", 0.0)
+            # soft_reward_score = res.get("reward_score", 0.0)
         import pdb;pdb.set_trace()
-        prediction = names[predicted_index] if predicted_index >=0  else "<none>"
-        target = solution[i]
-        correct = (prediction == target and predicted_index >= 0)
+        # prediction = names[predicted_index] if predicted_index >=0  else "<none>"
+        # target = solution[i]
+        correct = (predicted_index == target and predicted_index >= 0)
         reward = 1.0 if correct else 0.0
         rewards.append(reward)
         # optional logging
