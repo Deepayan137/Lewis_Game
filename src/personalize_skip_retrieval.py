@@ -1,19 +1,42 @@
 #!/usr/bin/env python3
 """
-personalize.py
+personalize_skip_retrieval.py
 
-Personalized identification task: Given a query image and multiple reference
-descriptions retrieved via CLIP, identify which reference matches the query.
+Ablation: skip the retriever entirely and directly give the listener
+the ground-truth description of a candidate concept.
 
-Usage:
-    python personalize.py --data_name PerVA --model_type original_7b --category all
+For every (query image of concept Q, description of concept C) pair the
+listener sees:
+  - the query image
+  - the personalised description of concept C (from the database)
+
+and answers yes / no: does this image match the description?
+
+  solution = 'yes'  if Q == C   (positive pair)
+  solution = 'no'   if Q != C   (negative pair)
+
+This enables full P / R / F1 computation per concept and tests whether
+the speaker's descriptions are discriminative enough for the zero-shot
+listener to correctly accept positives and reject negatives.
+
+The script is designed to run as a SLURM array job where
+SLURM_ARRAY_TASK_ID selects the concept_name (inner/reference concept C).
+Each array job processes all query images paired with one reference
+description, keeping jobs balanced and independent.
+
+Usage (single concept):
+    python src/personalize_skip_retrieval.py \\
+        --data_name PerVA --model_type original_7b \\
+        --category all --concept_name bo
+
+Usage (SLURM array — handled externally via --concept_name):
+    sbatch --array=0-N scripts/run_skip_ret.sh
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import string
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -30,154 +53,12 @@ from inference_utils.common import (
     get_category_for_concept,
     get_device,
     clear_cuda_cache,
-    PERVA_CATEGORY_MAP,
 )
-from inference_utils.dataset import SimpleImageDataset, create_data_loader, DictListDataset, dict_collate_fn
+from inference_utils.dataset import SimpleImageDataset, DictListDataset, dict_collate_fn
 from inference_utils.model import setup_model, speaker_describes_batch
-from inference_utils.retriever import SimpleClipRetriever
 from inference_utils.cleanup import extract_reasoning_answer_term
 
 LOG = logging.getLogger(__name__)
-
-
-# ============================================================================
-# Confidence Calculator
-# ============================================================================
-
-class ConfidenceCalculator:
-    """
-    Calculate confidence metrics from model generation outputs.
-    """
-    def __init__(self, processor):
-        self.processor = processor
-        self.tokenizer = processor.tokenizer
-
-    def extract_answer_probabilities(self, generation_output, letter2name):
-        """
-        Extract probabilities for each answer option (A, B, C, ...) from generation output.
-
-        Args:
-            generation_output: Output from model.generate() with output_scores=True
-            letter2name: Dict mapping letters to concept names
-
-        Returns:
-            Dict with probabilities, entropy, margin, and predicted letter
-        """
-        import torch.nn.functional as F
-
-        # Get scores (logits) for each token position
-        scores = generation_output.scores  # List of tensors, one per generated token
-        if not scores or len(scores) == 0:
-            # No scores available, return uniform distribution
-            num_options = len(letter2name)
-            uniform_prob = 1.0 / num_options
-            return {
-                "probabilities": {letter: uniform_prob for letter in letter2name.keys()},
-                "entropy": float(num_options) * uniform_prob * (-torch.log(torch.tensor(uniform_prob))).item(),
-                "margin": 0.0,
-                "predicted_letter": None
-            }
-
-        # Get the generated sequence
-        generated_ids = generation_output.sequences[0]  # Take first sequence
-        generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-        letter_tokens = {}
-        for letter in letter2name.keys():
-            # Try encoding the letter alone
-            token_ids = self.tokenizer.encode(letter, add_special_tokens=False)
-            if token_ids:
-                letter_tokens[letter] = token_ids[0]
-
-            # Also try encoding with common surrounding context (e.g., '"A"')
-            for context in [f'"{letter}"', f' {letter}', f'{letter}']:
-                token_ids = self.tokenizer.encode(context, add_special_tokens=False)
-                if token_ids and letter not in letter_tokens:
-                    # Check if this helps find the letter
-                    for tid in token_ids:
-                        tok_str = self.tokenizer.decode([tid], skip_special_tokens=True).strip(' "')
-                        if tok_str == letter:
-                            letter_tokens[letter] = tid
-                            break
-
-        # Search backwards through the generated sequence to find the answer letter
-        # This is more reliable since the answer appears near the end in JSON format
-        answer_position = None
-        predicted_letter = None
-        # Start from the end and work backwards
-        for i in range(len(generated_ids) - 1, -1, -1):
-            token_id = generated_ids[i].item()
-            token_str = self.tokenizer.decode([token_id], skip_special_tokens=True).strip().strip('"')
-
-            # Check if this token matches any answer letter
-            if token_str in letter2name:
-                # Verify this is in the "Answer" field by checking preceding context
-                context_start = max(0, i - 10)
-                context_text = self.tokenizer.decode(generated_ids[context_start:i], skip_special_tokens=True)
-                if '"Answer"' in context_text or 'Answer' in context_text:
-                    answer_position = i
-                    predicted_letter = token_str
-                    break
-        print(f"Found answer_position: {answer_position}, predicted_letter: {predicted_letter}")
-        if answer_position is None:
-            # Could not find answer position, return uniform distribution
-            num_options = len(letter2name)
-            uniform_prob = 1.0 / num_options
-            return {
-                "probabilities": {letter: uniform_prob for letter in letter2name.keys()},
-                "entropy": float(num_options) * uniform_prob * (-torch.log(torch.tensor(uniform_prob))).item(),
-                "margin": 0.0,
-                "predicted_letter": None
-            }
-
-        # Calculate the index into the scores list
-        # scores[i] corresponds to the i-th generated token (after the input prompt)
-        input_length = len(generated_ids) - len(scores)
-        score_idx = answer_position - input_length
-
-        if score_idx < 0 or score_idx >= len(scores):
-            # Score index out of bounds, return uniform distribution
-            num_options = len(letter2name)
-            uniform_prob = 1.0 / num_options
-            return {
-                "probabilities": {letter: uniform_prob for letter in letter2name.keys()},
-                "entropy": float(num_options) * uniform_prob * (-torch.log(torch.tensor(uniform_prob))).item(),
-                "margin": 0.0,
-                "predicted_letter": predicted_letter
-            }
-
-        # Get logits at the answer position
-        logits_at_answer = scores[score_idx][0]  # Shape: [vocab_size]
-
-        # Extract probabilities for each answer option
-        probs = F.softmax(logits_at_answer, dim=-1)
-
-        letter_probs = {}
-        for letter, token_id in letter_tokens.items():
-            letter_probs[letter] = probs[token_id].item()
-
-        # Normalize probabilities to sum to 1 across answer options
-        total_prob = sum(letter_probs.values())
-        if total_prob > 1e-10:
-            letter_probs = {k: v / total_prob for k, v in letter_probs.items()}
-        else:
-            # All probabilities are near zero, use uniform
-            num_options = len(letter2name)
-            uniform_prob = 1.0 / num_options
-            letter_probs = {letter: uniform_prob for letter in letter2name.keys()}
-
-        # Calculate entropy: -sum(p * log(p))
-        entropy = -sum([p * torch.log(torch.tensor(p + 1e-10)) for p in letter_probs.values()]).item()
-
-        # Calculate margin: difference between top two probabilities
-        sorted_probs = sorted(letter_probs.values(), reverse=True)
-        margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) >= 2 else sorted_probs[0]
-
-        return {
-            "probabilities": letter_probs,
-            "entropy": entropy,
-            "margin": margin,
-            "predicted_letter": predicted_letter
-        }
 
 
 # ============================================================================
@@ -186,20 +67,18 @@ class ConfidenceCalculator:
 
 def get_skip_ret_prompt(descriptions: List[str], category: str) -> str:
     """
-    Build the prompt for personalized identification.
+    Build the yes/no matching prompt for the skip-retrieval ablation.
 
     Args:
-        descriptions: List of reference description strings
+        descriptions: Single-element list containing "Name: <name>, Info: <desc>"
         category: Object category (e.g., 'toy', 'pet animal')
-        names: List of option names (letters A, B, C, ...)
-        query_desc: Optional query description (unused in current implementation)
 
     Returns:
         Formatted prompt string
     """
     answer_format = {
         "Reasoning": "<Brief justification>",
-        "Answer": f"yes or no"
+        "Answer": "yes or no"
     }
 
     descriptions_block = json.dumps(descriptions, indent=2, ensure_ascii=False)
@@ -210,50 +89,15 @@ def get_skip_ret_prompt(descriptions: List[str], category: str) -> str:
         f"{descriptions_block}\n\n"
         "Your Task:\n"
         f"1. Generate an attribute-focused description of the {category} in the query image. "
-        "Focus on its distinguishing features rather than superficial details such as background, pose, lighting, clothes or accessories.\n"
-        f"2. Compare your generated description of the query image with the provided description of the other {category}.\n"
-        f"3. Does the description of the query image match the provided description? Answer yes or no.\n\n"
+        "Focus on its distinguishing features rather than superficial details such as "
+        "background, pose, lighting, clothes or accessories.\n"
+        f"2. Compare your generated description of the query image with the provided "
+        f"description of the other {category}.\n"
+        f"3. Does the description of the query image match the provided description? "
+        "Answer yes or no.\n\n"
         "Output Requirements:\n"
-        f"- Your response MUST be a valid JSON exactly matching the format:\n{json.dumps(answer_format)}\n"
-        "- Do not include any extra text, explanations, or formatting outside of the JSON.\n"
-    )
-
-    return prompt
-
-def get_prompt(descriptions: List[str], category: str, names: List[str], query_desc: str = "") -> str:
-    """
-    Build the prompt for personalized identification.
-
-    Args:
-        descriptions: List of reference description strings
-        category: Object category (e.g., 'toy', 'pet animal')
-        names: List of option names (letters A, B, C, ...)
-        query_desc: Optional query description (unused in current implementation)
-
-    Returns:
-        Formatted prompt string
-    """
-    n = len(names)
-    letters = [string.ascii_uppercase[i] for i in range(n)]
-
-    answer_format = {
-        "Reasoning": "<Brief justification>",
-        "Answer": f"one of {letters}"
-    }
-
-    descriptions_block = json.dumps(descriptions, indent=2, ensure_ascii=False)
-    prompt = (
-        f"You are provided with a query image containing a {category} "
-        f"along with the name and detailed distinguishing features of several other {category}s.\n\n"
-        "Below are the name and their descriptions:\n"
-        f"{descriptions_block}\n\n"
-        "Your Task:\n"
-        f"1. Generate an attribute-focused description of the {category} in the query image. "
-        "Focus on its distinguishing features rather than superficial details such as background, pose, lighting, clothes or accessories.\n"
-        f"2. Compare your generated description of the query image with the provided descriptions of the other {category}s.\n"
-        f"3. Identify the name of the {category} in the query image from the best match.\n\n"
-        "Output Requirements:\n"
-        f"- Your response MUST be a valid JSON exactly matching the format:\n{json.dumps(answer_format)}\n"
+        f"- Your response MUST be a valid JSON exactly matching the format:\n"
+        f"{json.dumps(answer_format)}\n"
         "- Do not include any extra text, explanations, or formatting outside of the JSON.\n"
     )
 
@@ -264,40 +108,33 @@ def get_prompt(descriptions: List[str], category: str, names: List[str], query_d
 # Data Preparation
 # ============================================================================
 
-def prepare_test_retrieval_items(
+def prepare_test_items(
     args,
     description_json: Path,
     catalog_json: str,
     category: str,
-    retriever: SimpleClipRetriever,
-    k: int = 5,
 ) -> List[Dict[str, Any]]:
     """
-    Build a list of items for evaluation using CLIP retrieval.
+    Build evaluation items using a double loop:
+      outer: every query image in the test split
+      inner: every concept C in the description database
 
     Each item contains:
-      - 'path': path to query image
-      - 'problem': prompt string
-      - 'solution': ground-truth object name
-      - 'solution_desc': description string for the true object
-      - 'ret_path': list of retrieved image paths
-      - 'letter2name': mapping from letter options to concept names
+      - 'query_path'   : path to query image
+      - 'name'         : query concept Q
+      - 'concept_name' : reference concept C  (used for SLURM array filtering)
+      - 'problem'      : prompt (query image + description of C)
+      - 'solution'     : 'yes' if Q == C else 'no'
 
     Args:
-        args: Parsed arguments
-        description_json: Path to descriptions JSON
-        catalog_json: Path to catalog JSON
-        category: Category to evaluate
-        retriever: CLIP retriever instance
-        k: Number of references to retrieve
+        args            : parsed arguments
+        description_json: path to speaker-generated descriptions JSON
+        catalog_json    : path to catalog JSON
+        category        : category to evaluate
 
     Returns:
-        List of prepared item dicts
+        List of item dicts
     """
-    # Check for cached results
-    savedir = Path('outputs') / args.data_name / args.category / f'seed_{args.seed}'
-    savedir.mkdir(parents=True, exist_ok=True)
-
     LOG.info("Loading dataset from: %s", catalog_json)
     dataset = SimpleImageDataset(
         json_path=catalog_json,
@@ -307,7 +144,7 @@ def prepare_test_retrieval_items(
         data_name=args.data_name
     )
 
-    # Load description dictionary
+    # Load description dictionary (all concepts)
     with description_json.open("r", encoding="utf-8") as fh:
         desc_lookup: Dict[str, Any] = json.load(fh)
 
@@ -315,26 +152,39 @@ def prepare_test_retrieval_items(
     if concept_dict_format:
         desc_lookup = desc_lookup['concept_dict']
 
+    # Build lookup: concept_name -> description string
+    desc_by_concept: Dict[str, str] = {}
+    for key, value in desc_lookup.items():
+        # strip angle brackets if present: '<bo>' -> 'bo'
+        concept_name = key.strip('<>') if key.startswith('<') else key
+        if concept_dict_format:
+            desc_by_concept[concept_name] = value['info']['general']
+        else:
+            desc_by_concept[concept_name] = value
+
+    concept_names = sorted(desc_by_concept.keys())
+    LOG.info("Found %d concepts in description database", len(concept_names))
+
     items: List[Dict[str, Any]] = []
 
-    for item in tqdm(dataset, desc="Preparing retrieval items"):
-        query_path = item["path"]
-        query_name = item['name']
-        lookup_key = f'<{query_name}>' if concept_dict_format else query_name
-        descriptions: List[str] = []
-        if lookup_key in desc_lookup:
-            if concept_dict_format:
-                desc_info = desc_lookup[lookup_key]['info']['general']
-                descriptions.append(f"Name: {query_name}, Info: {desc_info}")
-            else:
-                descriptions.append(f"Name: {query_name}, Info: {desc_lookup[lookup_key]}")
-        item_category = get_category_for_concept(query_name, args.data_name)
-        prompt = get_skip_ret_prompt(descriptions, item_category)
-        items.append({
-            "path": query_path,
-            "problem": prompt,
-            "solution": 'yes'
-        })
+    for sub_item in tqdm(dataset, desc="Preparing items"):
+        query_path = sub_item["path"]
+        query_name = sub_item["name"]
+
+        # Inner loop: pair this query image with every concept's description
+        for concept_name in concept_names:
+            description = desc_by_concept[concept_name]
+            desc_entry = [f"Name: {concept_name}, Info: {description}"]
+            item_category = get_category_for_concept(concept_name, args.data_name)
+            prompt = get_skip_ret_prompt(desc_entry, item_category)
+
+            items.append({
+                "query_path": query_path,
+                "name": query_name,              # outer query concept Q
+                "concept_name": concept_name,    # inner reference concept C
+                "problem": prompt,
+                "solution": "yes" if query_name == concept_name else "no",
+            })
 
     return items
 
@@ -351,20 +201,11 @@ def run_inference_loop(
     batch_size: int = 8,
     max_new_tokens: int = 128,
     device: torch.device = None,
-    mode: str = "inference",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Run model on the prepared items and return results and metrics.
+    Run the zero-shot listener on each (query image, description) pair.
 
-    Args:
-        model: The loaded model
-        processor: The model processor
-        items: Iterable of prepared item dicts
-        temperature: Generation temperature
-        batch_size: Batch size for inference
-        max_new_tokens: Maximum tokens to generate
-        device: Torch device
-        mode: 'inference' or 'analysis' mode
+    Tracks yes/no accuracy separately so P / R / F1 can be derived.
 
     Returns:
         Tuple of (results_list, metrics_dict)
@@ -376,94 +217,119 @@ def run_inference_loop(
     )
 
     results: List[Dict[str, Any]] = []
-    correct_count = 0
-    total_count = 0
+    correct_yes, correct_no = 0, 0
+    total_yes, total_no = 0, 0
 
     if device is None:
         device = get_device()
 
-    # Initialize confidence calculator for analysis mode
-    confidence_calc = ConfidenceCalculator(processor) if mode == "analysis" else None
-
     for batch in tqdm(loader, desc="Running inference"):
-        # Load images
         images = []
         for it in batch:
-            if "image" in it and it["image"] is not None:
-                images.append(it["image"])
-            else:
-                images.append(Image.open(it["path"]).convert("RGB"))
+            try:
+                images.append(Image.open(it["query_path"]).convert("RGB"))
+            except Exception:
+                images.append(Image.new("RGB", (224, 224)))
 
-        problems = [it["problem"] for it in batch]
-        solutions = [it["solution"] for it in batch]
-        paths = [it.get("path") for it in batch]
+        problems  = [it["problem"]      for it in batch]
+        solutions = [it["solution"]     for it in batch]
+        query_paths   = [it["query_path"]   for it in batch]
+        names         = [it["name"]         for it in batch]
+        concept_names = [it["concept_name"] for it in batch]
 
         try:
-        
             responses = speaker_describes_batch(
                 model, processor, problems, images,
                 temperature=temperature, max_new_tokens=max_new_tokens
             )
-            generation_outputs = None
         except Exception:
             LOG.exception("Failed generating responses for batch; skipping.")
-            for path, sol in zip(paths, solutions):
-                result_entry = {
-                    "image_path": path,
+            for qp, name, cname, sol in zip(query_paths, names, concept_names, solutions):
+                results.append({
+                    "query_path": qp,
+                    "name": name,
+                    "concept_name": cname,
                     "problem": None,
                     "solution": sol,
+                    "response": "",
+                    "prediction": "",
                     "correct": False,
-                }
-                results.append(result_entry)
-                total_count += 1
+                })
+                if sol == "yes":
+                    total_yes += 1
+                else:
+                    total_no += 1
             continue
 
-        # Normalize responses
         if isinstance(responses, str):
             responses = [responses]
 
-        # Extract predictions
+        # Extract yes/no predictions
         predictions = []
         for resp in responses:
             try:
                 if isinstance(resp, list):
                     resp = resp[0]
                 term = extract_reasoning_answer_term(resp, "Answer")
-                predictions.append(term.strip() if term else "")
+                predictions.append(term.strip().lower() if term else "")
             except Exception:
                 LOG.exception("Failed to extract answer; using empty string")
                 predictions.append("")
 
-        # Accumulate results
-        for idx, (path, problem, sol, resp, pred) in enumerate(zip(
-            paths, problems, solutions, responses, predictions
-        )):
-            # Map letter prediction to concept name
-            is_correct = pred.lower() == sol.lower()
+        for qp, name, cname, problem, sol, resp, pred in zip(
+            query_paths, names, concept_names, problems, solutions, responses, predictions
+        ):
+            sol_lower = sol.lower()
+            is_correct = pred == sol_lower
 
-            if is_correct:
-                correct_count += 1
-            total_count += 1
+            if sol_lower == "yes":
+                total_yes += 1
+                if is_correct:
+                    correct_yes += 1
+            else:
+                total_no += 1
+                if is_correct:
+                    correct_no += 1
 
-            result_entry = {
-                "image_path": path,
+            results.append({
+                "query_path": qp,
+                "name": name,
+                "concept_name": cname,
                 "problem": problem,
                 "solution": sol,
                 "response": resp[0] if isinstance(resp, list) else resp,
                 "prediction": pred,
                 "correct": is_correct,
-            }
-
-            # Add confidence metrics in analysis mode
-            results.append(result_entry)
+            })
 
         clear_cuda_cache()
 
-    accuracy = correct_count / total_count if total_count > 0 else 0.0
+    total   = total_yes + total_no
+    correct = correct_yes + correct_no
+
+    # Precision = TP / (TP + FP) = correct_yes / (correct_yes + (total_no - correct_no))
+    tp = correct_yes
+    fp = total_no - correct_no     # negative pairs predicted "yes"
+    fn = total_yes - correct_yes   # positive pairs predicted "no"
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1        = (2 * precision * recall / (precision + recall)
+                 if (precision + recall) > 0 else 0.0)
+
     metrics = {
-        "accuracy": accuracy,
-        "correct": correct_count,
-        "total": total_count,
+        "accuracy":     correct / total if total > 0 else 0.0,
+        "correct":      correct,
+        "total":        total,
+        "correct_yes":  correct_yes,
+        "correct_no":   correct_no,
+        "total_yes":    total_yes,
+        "total_no":     total_no,
+        "accuracy_yes": correct_yes / total_yes if total_yes > 0 else 0.0,
+        "accuracy_no":  correct_no  / total_no  if total_no  > 0 else 0.0,
+        "precision":    precision,
+        "recall":       recall,
+        "f1":           f1,
     }
 
     return results, metrics
@@ -475,16 +341,10 @@ def run_inference_loop(
 
 def parse_args():
     import argparse
-    parser = argparse.ArgumentParser(description="Personalized identification evaluation")
-
+    parser = argparse.ArgumentParser(
+        description="Skip-retrieval ablation: yes/no match between query image and concept description"
+    )
     add_common_args(parser)
-
-    # Task-specific args
-    parser.add_argument("--k_retrieval", type=int, default=3,
-                        help="Number of references to retrieve")
-    parser.add_argument("--mode", type=str, default="inference", choices=["inference", "analysis"],
-                        help="Mode: 'inference' for standard evaluation, 'analysis' for confidence/entropy analysis")
-
     return parser.parse_args()
 
 
@@ -498,8 +358,8 @@ def main():
     set_seed(args.seed)
     LOG.info("Args: %s", args)
 
-    # Set up paths
-    manifests_dir = Path("manifests") / args.data_name
+    # Paths
+    manifests_dir    = Path("manifests") / args.data_name
     description_json = (
         Path("outputs") / args.data_name / args.category /
         f"seed_{args.seed}" / f"descriptions_{args.db_type}.json"
@@ -510,32 +370,22 @@ def main():
         LOG.error("Descriptions file not found at %s", description_json)
         raise FileNotFoundError(f"Descriptions file not found: {description_json}")
 
-    # Initialize retriever
-    retriever = SimpleClipRetriever(
-        dataset=args.data_name,
-        category=args.category,
-        json_path=catalog_json,
-        create_index=True,
-        seed=args.seed,
-        db_type=args.db_type
-    )
-    LOG.info("Retriever created")
-
-    # Prepare test items
-    items = prepare_test_retrieval_items(
+    # Prepare all (query image, concept description) pairs
+    items = prepare_test_items(
         args,
         description_json,
         catalog_json,
         args.category,
-        retriever,
-        k=args.k_retrieval
     )
     LOG.info("Prepared %d test items", len(items))
 
-    # Filter by concept if specified
+    # Filter to a single reference concept if requested (SLURM array hook)
     if args.concept_name:
-        items = [item for item in items if item.get("solution") == args.concept_name]
-        LOG.info("Filtered to %d items for concept '%s'", len(items), args.concept_name)
+        items = [item for item in items if item.get("concept_name") == args.concept_name]
+        LOG.info(
+            "Filtered to %d items for concept_name='%s'",
+            len(items), args.concept_name
+        )
 
     # Load model
     try:
@@ -550,7 +400,7 @@ def main():
         }
 
     model_path = model_config['path']
-    use_peft = model_config['use_peft']
+    use_peft   = model_config['use_peft']
 
     LOG.info("Loading model from %s", model_path)
     model, processor = setup_model(model_path, use_peft=use_peft)
@@ -563,22 +413,24 @@ def main():
         temperature=args.temperature,
         batch_size=args.batch_size,
         max_new_tokens=args.max_new_tokens,
-        mode=args.mode,
     )
 
-    # Save results
+    # Save results — one file per concept when running as SLURM array
     outdir = Path('results') / args.data_name / args.category
     if args.concept_name:
         outdir = outdir / args.concept_name
     outdir = outdir / f'seed_{args.seed}'
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # Include mode in filename for analysis runs
-    mode_suffix = f"_{args.mode}" if args.mode == "analysis" else ""
-    outpath = outdir / f"results_model_{args.model_type}_db_{args.db_type}_k_{args.k_retrieval}{mode_suffix}.json"
+    outpath = outdir / f"results_model_{args.model_type}_db_{args.db_type}_skip_ret.json"
     save_results(results, metrics, vars(args), outpath)
 
-    LOG.info("Accuracy: %.4f (%d/%d)", metrics['accuracy'], metrics['correct'], metrics['total'])
+    LOG.info(
+        "Accuracy: %.4f (%d/%d) | Yes: %.4f | No: %.4f | P: %.4f | R: %.4f | F1: %.4f",
+        metrics['accuracy'], metrics['correct'], metrics['total'],
+        metrics['accuracy_yes'], metrics['accuracy_no'],
+        metrics['precision'], metrics['recall'], metrics['f1'],
+    )
 
 
 if __name__ == "__main__":
