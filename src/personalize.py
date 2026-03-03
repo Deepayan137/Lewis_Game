@@ -296,6 +296,14 @@ def prepare_test_retrieval_items(
             text_k=len(desc_lookup)
         )
 
+        # If gt_present is set, ensure the ground-truth concept is in the results.
+        # If not found, drop the 0th retrieved result and insert the GT at position 0.
+        if args.gt_present:
+            retrieved_names = [r.get("name") for r in results]
+            if query_name not in retrieved_names:
+                results.pop(0)
+                results.insert(0, {"path": query_name, "name": query_name})
+
         descriptions: List[str] = []
         ret_paths: List[str] = []
         names = []
@@ -516,6 +524,9 @@ def parse_args():
                         help="Number of references to retrieve")
     parser.add_argument("--mode", type=str, default="inference", choices=["inference", "analysis"],
                         help="Mode: 'inference' for standard evaluation, 'analysis' for confidence/entropy analysis")
+    parser.add_argument("--gt_present", action="store_true",
+                        help="If set, ensure the ground-truth concept is always present in the retrieved results. "
+                             "If missing, the 0th retrieved result is dropped and the GT concept is inserted at position 0.")
 
     return parser.parse_args()
 
