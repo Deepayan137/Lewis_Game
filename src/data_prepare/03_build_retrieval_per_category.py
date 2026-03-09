@@ -207,6 +207,10 @@ class HierarchicalClipRetriever():
                 best_image_id, best_similarity = self._find_most_similar_in_class(
                     query_features, image_ids_in_class
                 )
+            elif selection_strategy == 'most_dissimilar':
+                best_image_id, best_similarity = self._find_most_dissimilar_in_class(
+                    query_features, image_ids_in_class
+                )
             elif selection_strategy == 'random':
                 best_image_id = random.choice(image_ids_in_class)
                 best_similarity = class_distance
@@ -218,38 +222,40 @@ class HierarchicalClipRetriever():
                 else:
                     best_image_id = random.choice(image_ids_in_class)
                     best_similarity = class_distance
-            
+
             distractor_candidates.append({
                 'image_id': best_image_id,
                 'image_path': self.image_id2info[best_image_id]['path'],
                 'class_name': class_name,
                 'similarity': best_similarity
             })
-        distractor_candidates.sort(key=lambda x: x['similarity'], reverse=True)
+        # For most_dissimilar, sort ascending so the truly least-similar distractors come first.
+        # For all other strategies, sort descending (hardest / most similar first).
+        sort_ascending = (selection_strategy == 'most_dissimilar')
+        distractor_candidates.sort(key=lambda x: x['similarity'], reverse=not sort_ascending)
         selected_distractors = distractor_candidates[:num_distractors]
         return selected_distractors
     
-    def _find_most_dissimilar_in_class(self, query_features, image_ids_in_class, k=4, reverse=False):
+    def _find_most_dissimilar_in_class(self, query_features, image_ids_in_class):
         """
-        Find the k most dissimilar (least similar) images within a specific class.
+        Find the single most dissimilar (least similar) image within a specific class.
 
         Args:
             query_features: numpy array, (1, dim)
             image_ids_in_class: list of image ids
-            k: number of most dissimilar images to return
 
         Returns:
-            List of tuples: [(image_id, similarity), ...] sorted by increasing similarity (most dissimilar first)
+            (worst_image_id, worst_similarity) — same convention as _find_most_similar_in_class
         """
-        similarities = []
+        worst_similarity = float('inf')
+        worst_image_id = None
         for image_id in image_ids_in_class:
             image_features = self.image_index.reconstruct(image_id).reshape(1, -1)
             similarity = np.dot(query_features, image_features.T)[0, 0]
-            similarities.append((image_id, similarity))
-        # Sort by similarity (ascending, so least similar are first)
-        similarities.sort(key=lambda x: x[1], reverse=reverse)
-        worst_image_id = [item for item, _ in similarities]
-        return worst_image_id[:k]
+            if similarity < worst_similarity:
+                worst_similarity = similarity
+                worst_image_id = image_id
+        return worst_image_id, worst_similarity
     
     def _find_most_similar_in_class(self, query_features, image_ids_in_class):
         """Find the most similar image within a specific class"""
@@ -282,12 +288,23 @@ class HierarchicalClipRetriever():
             - Speaker sees: query_image_path (single view)
             - Listener pool: [hard_positive (alt view), neg1, neg2]
         """
+        # Resolve distractor strategy once per query based on easy_pos_prob.
+        # easy_pos_prob=0.0 → always most_similar (hardest distractors)
+        # easy_pos_prob=1.0 → always most_dissimilar (easiest distractors)
+        # in between    → coin flip, all distractors for this query follow the outcome
+        if easy_pos_prob <= 0.0:
+            resolved_strategy = 'most_similar'
+        elif easy_pos_prob >= 1.0:
+            resolved_strategy = 'most_dissimilar'
+        else:
+            resolved_strategy = 'most_dissimilar' if random.random() < easy_pos_prob else 'most_similar'
+
         if self.with_negative:
             distractors = self.hierarchical_distractor_sampling_with_negatives(
-                query_image_path, num_distractors, selection_strategy=selection_strategy)
+                query_image_path, num_distractors, selection_strategy=resolved_strategy)
         else:
             distractors = self.hierarchical_distractor_sampling(
-                query_image_path, num_distractors, selection_strategy=selection_strategy)
+                query_image_path, num_distractors, selection_strategy=resolved_strategy)
 
         
         try:
