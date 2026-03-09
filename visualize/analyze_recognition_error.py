@@ -67,8 +67,45 @@ def extract_reasoning_from_response(response: str) -> Dict[str, str]:
         }
 
 
+def concept_from_path(path: str) -> str:
+    """Extract concept name as the parent directory of the image file."""
+    return Path(path).parent.name if path else ''
+
+
+def load_database(dataset: str, db_type: str, seed: int) -> Dict[str, str]:
+    """
+    Load speaker descriptions from the database JSON.
+
+    Returns a dict mapping plain concept name -> description string
+    (general[0] + distinct features[0]).
+    """
+    db_path = Path(f'outputs/{dataset}/all/seed_{seed}/database_{db_type}.json')
+    if not db_path.exists():
+        print(f"Warning: Database not found at {db_path}")
+        return {}
+    with open(db_path, 'r') as f:
+        data = json.load(f)
+    concept_dict = data.get('concept_dict', {})
+    lookup = {}
+    for key, entry in concept_dict.items():
+        plain_name = key.strip('<>')
+        info = entry.get('info', {})
+        general = info.get('general', [])
+        distinct = info.get('distinct features', [])
+        parts = []
+        if general:
+            parts.append(general[0])
+        if distinct:
+            parts.append(distinct[0])
+        lookup[plain_name] = ' '.join(parts)
+    return lookup
+
+
 def find_incorrect_predictions(dataset_name: str, results_path: Path,
-                               model_type: str, db_type: str, use_desc=False) -> List[Dict[str, Any]]:
+                               model_type: str, db_type: str,
+                               db_lookup: Dict[str, str],
+                               seed: int = 23,
+                               use_desc: bool = False) -> List[Dict[str, Any]]:
     """
     Find all incorrect predictions for the given configuration.
 
@@ -99,7 +136,7 @@ def find_incorrect_predictions(dataset_name: str, results_path: Path,
             continue
 
         concept_name = concept_dir.name
-        seed_path = concept_dir / 'seed_23'
+        seed_path = concept_dir / f'seed_{seed}'
 
         if not seed_path.exists():
             continue
@@ -137,6 +174,11 @@ def find_incorrect_predictions(dataset_name: str, results_path: Path,
             # Extract reasoning from response
             parsed_response = extract_reasoning_from_response(response)
 
+            # Look up speaker descriptions (silently skip if not found)
+            ref_concept = concept_from_path(ref_path)
+            query_desc = db_lookup.get(concept_name, '')
+            ref_desc = db_lookup.get(ref_concept, '')
+
             # Build error record
             error_record = {
                 'dataset': dataset_name,
@@ -148,7 +190,10 @@ def find_incorrect_predictions(dataset_name: str, results_path: Path,
                 'reasoning': parsed_response['reasoning'],
                 'model_answer': parsed_response['answer'],
                 'pred': pred,
-                'solution': solution
+                'solution': solution,
+                'query_desc': query_desc,
+                'ref_concept': ref_concept,
+                'ref_desc': ref_desc,
             }
 
             incorrect_predictions.append(error_record)
@@ -174,6 +219,11 @@ def display_error(error: Dict[str, Any], index: int):
     print(f"Query Image:  {error['query_path']}")
     print(f"Ref Image:    {error['ref_path']}")
     print(f"{'-'*70}")
+    print(f"\n📖 QUERY DESCRIPTION ({error['concept']}):")
+    print(f"{error['query_desc']}" if error['query_desc'] else "  (not found)")
+    print(f"\n📖 REF DESCRIPTION ({error['ref_concept']}):")
+    print(f"{error['ref_desc']}" if error['ref_desc'] else "  (not found)")
+    print(f"\n{'-'*70}")
     print(f"\nQuestion: {error['question']}")
     print(f"\n{'-'*70}")
     print(f"SOLUTION:     {error['solution']}")
@@ -353,6 +403,50 @@ def generate_html(errors: List[Dict[str, Any]], output_file: str,
         .image-label.reference {{
             background: #9c27b0;
             color: white;
+        }}
+
+        .description-section {{
+            margin: 25px 0;
+            padding: 20px;
+            background: #e8f5e9;
+            border-radius: 10px;
+            border-left: 4px solid #43a047;
+        }}
+
+        .description-section-title {{
+            font-weight: 700;
+            font-size: 1.2em;
+            color: #2e7d32;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+
+        .description-grid {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }}
+
+        .description-box {{
+            background: white;
+            border-radius: 8px;
+            padding: 12px 15px;
+        }}
+
+        .description-box-label {{
+            font-weight: 700;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            color: #43a047;
+            margin-bottom: 8px;
+        }}
+
+        .description-box-text {{
+            font-size: 0.95em;
+            line-height: 1.7;
+            color: #333;
         }}
 
         .question-section {{
@@ -544,6 +638,9 @@ def generate_html(errors: List[Dict[str, Any]], output_file: str,
         question = html_escape(error['question'])
         reasoning = html_escape(error['reasoning'])
         model_answer = html_escape(str(error['model_answer']))
+        query_desc = html_escape(error.get('query_desc', ''))
+        ref_desc = html_escape(error.get('ref_desc', ''))
+        ref_concept = html_escape(error.get('ref_concept', ''))
 
         html += f"""
         <div class="error-card" data-index="{idx}">
@@ -563,6 +660,20 @@ def generate_html(errors: List[Dict[str, Any]], output_file: str,
                         <div class="image-label reference">🎯 REFERENCE IMAGE</div>
                         <img src="{clean_path(error['ref_path'])}" alt="Reference Image" loading="lazy">
                         <div class="image-path">{clean_path(error['ref_path'])}</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="description-section">
+                <div class="description-section-title">📖 Speaker Descriptions</div>
+                <div class="description-grid">
+                    <div class="description-box">
+                        <div class="description-box-label">Query concept: {html_escape(error['concept'])}</div>
+                        <div class="description-box-text">{query_desc if query_desc else '<em>not found</em>'}</div>
+                    </div>
+                    <div class="description-box">
+                        <div class="description-box-label">Ref concept: {ref_concept}</div>
+                        <div class="description-box-text">{ref_desc if ref_desc else '<em>not found</em>'}</div>
                     </div>
                 </div>
             </div>
@@ -707,6 +818,12 @@ Examples:
         '--use_desc',
         action='store_true',
     )
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=23,
+        help='Seed used for results and database paths (default: 23)'
+    )
     args = parser.parse_args()
 
     # Set up paths
@@ -717,13 +834,19 @@ Examples:
         print(f"\n✗ Error: Results path does not exist: {all_path}")
         return
 
+    # Load speaker descriptions database
+    db_lookup = load_database(args.dataset, args.db_type, args.seed)
+    print(f"Loaded {len(db_lookup)} concept descriptions from database.")
+
     # Find incorrect predictions
     errors = find_incorrect_predictions(
         args.dataset,
         all_path,
         args.model_type,
         args.db_type,
-        args.use_desc
+        db_lookup=db_lookup,
+        seed=args.seed,
+        use_desc=args.use_desc,
     )
     if not errors:
         print("\n✓ No incorrect predictions found!")
